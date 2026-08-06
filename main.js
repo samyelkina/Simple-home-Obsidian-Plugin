@@ -2289,6 +2289,11 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       return;
     }
 
+    // Track the opened note in recent history so "Recently viewed" reflects opens,
+    // not just creations and closes. Does not rebuild the homepage.
+    this.settings.recentHistory = [target.path, ...this.settings.recentHistory.filter((p) => p !== target.path)].slice(0, HISTORY_LIMIT);
+    this.saveSettings();
+
     // Never replace the Home view itself: if no explicit leaf was given, or the
     // resolved leaf is the Home leaf, open in a brand-new leaf instead.
     const homeLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_START_PAGE);
@@ -2329,7 +2334,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       return;
     }
 
-    this.openFile(lastClosed_path, sourceLeaf);
+    this.openFile(lastClosed.path, sourceLeaf);
   }
 
   getRecentlyClosedNotes(limit = HISTORY_LIMIT) {
