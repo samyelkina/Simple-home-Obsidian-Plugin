@@ -1,6 +1,7 @@
 # Simple Home Page
 
 Simple Home Page adds a focused home screen to Obsidian with fast file-name search, recent-note access, deleted-note restore, and quick vault navigation.
+Obsidian Plugin View: https://community.obsidian.md/plugins/simple-home
 
 ## Features
 

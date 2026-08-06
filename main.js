@@ -27,7 +27,32 @@ const DEFAULT_SETTINGS = {
   pinnedItems: [],
   deletedItems: [],
   recentHistory: [],
+  removedBookmarks: [],
   folderHistory: [],
+  // Display section toggles
+  showRecent: true,
+  showDeleted: true,
+  showPinned: true,
+  showTasks: false,
+  showTempNotes: true,
+  showSearch: true,
+  showVaultTree: true,
+  showStats: true,
+  showUpcoming: true,
+  upcomingMaxItems: 6,
+  showBookmarks: true,
+  showFavorites: true,
+  showGreeting: true,
+  // Greeting
+  tasksFilterQuery: "",
+  maxTasks: 10,
+  tasks: [],
+  // Temporary notes folder
+  tempFolder: TEMPORARY_FOLDER,
+  // Compact ribbon menu (true = show popover menu, false = open full view)
+  compactRibbonMenu: true,
+  layoutPreset: "default",
+  focusMode: false,
 };
 
 function normalizeStringHistory(value) {
@@ -267,6 +292,9 @@ class LocalStartPageView extends ItemView {
     this.selectedSuggestionIndex = 0;
     this.activeFolderPath = null;
     this.treeBodyEl = null;
+    // Multi-selection state
+    this.selectedItems = new Set();
+    this.lastSelectedIndex = -1;
   }
 
   getViewType() {
@@ -305,238 +333,362 @@ class LocalStartPageView extends ItemView {
     contentEl.addClass("local-start-page");
 
     const shell = contentEl.createDiv({ cls: "local-start-page__shell" });
-    const hero = shell.createDiv({ cls: "local-start-page__hero" });
+    shell.toggleClass("local-start-page__shell--focus-mode", this.plugin.settings.focusMode);
 
-    const heroHeader = hero.createDiv({ cls: "local-start-page__hero-header" });
-    const heroHeading = heroHeader.createDiv({ cls: "local-start-page__hero-heading" });
-    const heroActions = heroHeader.createDiv({ cls: "local-start-page__hero-actions" });
-
-    heroHeading.createEl("p", {
-      cls: "local-start-page__eyebrow",
-      text: "Welcome",
+    // Section 1: Greeting (centered, no name)
+    const greeting = shell.createDiv({ cls: "local-start-page__greeting" });
+    greeting.createEl("h1", {
+      cls: "local-start-page__greeting-text",
+      text: this.plugin.settings.showGreeting !== false ? this.plugin.getGreetingText() : "Welcome",
     });
-    heroHeading.createEl("h1", { text: this.plugin.settings.title || "Home" });
-    heroHeading.createEl("p", {
-      cls: "local-start-page__subtitle",
+    greeting.createEl("p", {
+      cls: "local-start-page__greeting-sub",
       text: this.plugin.settings.subtitle || "Search files and folders across your vault",
     });
 
-    const lastClosed = this.plugin.getLastClosedNote();
-    const reopenButton = heroActions.createEl("button", {
-      cls: "local-start-page__reopen-button",
-      text: "Open last closed note",
-    });
-    reopenButton.type = "button";
-    reopenButton.disabled = !lastClosed;
-    reopenButton.title = lastClosed
-      ? `${lastClosed.path}\nCmd/Ctrl+Click: open recently closed notes`
-      : "Cmd/Ctrl+Click: open recently closed notes";
-    reopenButton.addEventListener("click", async (event) => {
-      reopenButton.disabled = true;
-      try {
-        if (event.metaKey || event.ctrlKey) {
-          await this.plugin.openRecentlyClosedNotes();
-        } else {
-          await this.plugin.openLastClosedNote(this.leaf);
-        }
-      } finally {
-        reopenButton.disabled = false;
-      }
-    });
-
-    const tempButton = heroActions.createEl("button", {
-      cls: "local-start-page__temp-note-button",
-      text: "Create temporary note",
-    });
-    tempButton.type = "button";
-    tempButton.title = "Click: create temporary note\nCmd/Ctrl+Click: create temporary note in new tab";
-    tempButton.addEventListener("click", async (event) => {
-      tempButton.disabled = true;
-      try {
-        const targetLeaf = event.metaKey || event.ctrlKey ? this.app.workspace.getLeaf(true) : this.leaf;
-        await this.plugin.createTemporaryNote(targetLeaf);
-      } catch (error) {
-        console.error("Local Home Page: failed to create temporary note", error);
-        new Notice("Could not create a temporary note.");
-      } finally {
-        tempButton.disabled = false;
-      }
-    });
-
-    hero.createEl("h2", { cls: "local-start-page__outline-anchor", text: "Search" });
-    const searchRow = hero.createDiv({ cls: "local-start-page__search" });
-    const searchWrap = searchRow.createDiv({ cls: "local-start-page__search-wrap" });
-    this.searchComponent = new SearchComponent(searchWrap);
-    this.searchComponent.setPlaceholder("Search files and folders");
-    this.searchComponent.setValue(this.query);
-    this.inputEl = this.searchComponent.inputEl;
-
-    this.suggestionEl = hero.createDiv({ cls: "local-start-page__suggestions" });
-    this.suggestionEl.hide();
-
-    const recentFolders = this.plugin.getRecentFolderItems(4);
-    if (recentFolders.length) {
-      const folderSection = hero.createDiv({ cls: "local-start-page__folder-strip" });
-      const folderHeader = folderSection.createDiv({ cls: "local-start-page__section-header" });
-      folderHeader.createEl("h2", {
-        cls: "local-start-page__section-label",
-        text: "Recent folders",
-      });
-      folderHeader.createEl("p", {
-        cls: "local-start-page__section-copy",
-        text: "Jump back into the places you opened most recently.",
-      });
-
-      const folderGrid = folderSection.createDiv({ cls: "local-start-page__folder-grid" });
-      for (const folder of recentFolders) {
-        const card = folderGrid.createDiv({ cls: "local-start-page__folder-card" });
-        card.tabIndex = 0;
-        card.setAttr("role", "button");
-
-        const iconWrap = card.createDiv({ cls: "local-start-page__folder-icon" });
-        setIcon(iconWrap, "folder");
-
-        card.createEl("div", {
-          cls: "local-start-page__folder-title",
-          text: folder.title,
-        });
-        card.createEl("div", {
-          cls: "local-start-page__folder-meta",
-          text: folder.path || this.plugin.getVaultRootLabel(),
-        });
-        card.createEl("div", {
-          cls: "local-start-page__folder-badge",
-          text: `${folder.noteCount} note${folder.noteCount === 1 ? "" : "s"}`,
-        });
-
-        const onRevealFolder = () => this.focusTreeFolder(folder.path);
-        card.addEventListener("click", onRevealFolder);
-        card.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onRevealFolder();
-          }
-        });
-      }
-    }
-
-    hero.createEl("h2", { cls: "local-start-page__outline-anchor", text: "Overview" });
-    const summaryGrid = hero.createDiv({ cls: "local-start-page__summary-grid" });
-    this.renderSummaries(summaryGrid);
-
-    const tabsRow = shell.createDiv({ cls: "local-start-page__tabs-row" });
-    const tabs = tabsRow.createDiv({ cls: "local-start-page__tabs" });
-    const tabDefs = [
-      { id: "recent", label: "Recent" },
-      { id: "deleted", label: "Deleted" },
-      { id: "pinned", label: "Pinned" },
-    ];
-
-    this.tabButtons.clear();
-    for (const tab of tabDefs) {
-      const button = tabs.createEl("button", {
-        cls: "local-start-page__tab",
-        text: tab.label,
-      });
-      button.type = "button";
-      button.addEventListener("click", () => {
-        this.activeTab = tab.id;
-        this.resetSearch();
-        this.activeFolderPath = null;
+    // Section 2: Search bar (directly under the greeting)
+    if (this.plugin.settings.showSearch !== false) {
+      const searchRow = shell.createDiv({ cls: "local-start-page__search" });
+      const searchWrap = searchRow.createDiv({ cls: "local-start-page__search-wrap" });
+      this.searchComponent = new SearchComponent(searchWrap);
+      this.searchComponent.setPlaceholder("Search files and folders");
+      this.searchComponent.setValue(this.query);
+      this.inputEl = this.searchComponent.inputEl;
+      this.suggestionEl = shell.createDiv({ cls: "local-start-page__suggestions" });
+      this.suggestionEl.hide();
+      if (focusSearch) { setTimeout(() => this.focusSearch(), 0); }
+      this.searchComponent.onChange((value) => {
+        this.query = value;
+        this.selectedSuggestionIndex = 0;
+        this.renderSuggestions();
         this.renderPanel();
       });
-      this.tabButtons.set(tab.id, button);
-    }
-
-    const workspaceGrid = shell.createDiv({ cls: "local-start-page__workspace-grid" });
-
-    const panel = workspaceGrid.createDiv({ cls: "local-start-page__panel" });
-    this.statusEl = panel.createEl("p", { cls: "local-start-page__status" });
-    this.panelEl = panel.createDiv({ cls: "local-start-page__panel-body" });
-
-    const treePanel = workspaceGrid.createDiv({ cls: "local-start-page__tree-panel" });
-    const treeHeader = treePanel.createDiv({ cls: "local-start-page__tree-header" });
-    treeHeader.createEl("h2", {
-      cls: "local-start-page__summary-label",
-      text: "Vault tree",
-    });
-    treeHeader.createEl("p", {
-      cls: "local-start-page__tree-copy",
-      text: "Expand folders to browse notes without relying on the sidebar.",
-    });
-    this.treeBodyEl = treePanel.createDiv({ cls: "local-start-page__tree-body" });
-    this.renderFileTree(this.treeBodyEl);
-
-    this.searchComponent.onChange((value) => {
-      this.query = value;
-      this.selectedSuggestionIndex = 0;
-      this.renderSuggestions();
-      this.renderPanel();
-    });
-
-    this.inputEl.addEventListener("keydown", (event) => {
-      if (event.key === "ArrowDown") {
-        if (!this.currentSuggestions.length) {
-          return;
+      this.inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const sel = this.selectedItems && this.selectedItems.values ? this.selectedItems.values().next().value : null;
+          if (sel && sel.path) { this.openFileNew(sel.path); this.resetSearch(); }
+        } else if (e.key === "Escape") {
+          if (this.query) { this.resetSearch(); } else { this.inputEl.blur(); }
         }
+      });
+    } else {
+      this.inputEl = null;
+      this.searchComponent = null;
+      this.suggestionEl = null;
+    }
 
-        event.preventDefault();
-        this.selectedSuggestionIndex = Math.min(
-          this.currentSuggestions.length - 1,
-          this.selectedSuggestionIndex + 1
-        );
-        this.renderSuggestions();
-        return;
-      }
+    // Quick actions (Open last note / New note)
+    if (this.plugin.settings.showQuickCapture !== false) {
+      this.renderQuickActions(shell);
+    }
 
-      if (event.key === "ArrowUp") {
-        if (!this.currentSuggestions.length) {
-          return;
+    // Section 3: Recent (horizontal cards)
+    if (this.plugin.settings.showRecent !== false) {
+      const recent = this.plugin.getRecentItems(this.plugin.settings.showTempNotes !== false).slice(0, this.plugin.settings.maxRecent);
+      if (recent.length) {
+        const section = shell.createDiv({ cls: "local-start-page__section" });
+        this.renderSectionHeader(section, "Recent", "clock");
+        const grid = section.createDiv({ cls: "local-start-page__card-row" });
+        for (const item of recent) {
+          const card = grid.createDiv({ cls: "local-start-page__page-card" });
+          card.tabIndex = 0;
+          card.setAttr("role", "button");
+          const open = () => { if (item.path) this.openFileNew(item.path); };
+          card.addEventListener("click", open);
+          card.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+          });
+          const iconWrap = card.createDiv({ cls: "local-start-page__page-card-icon" });
+          setIcon(iconWrap, item.badge ? "file-text" : "file");
+          card.createEl("div", { cls: "local-start-page__page-card-title", text: item.title });
+          card.createEl("div", {
+            cls: "local-start-page__page-card-meta",
+            text: item.meta || "",
+          });
+          card.addEventListener("contextmenu", (e) => {
+            this.showContextMenu(e, [
+              {
+                title: "Hide from recent",
+                icon: "eye-off",
+                onClick: () => this.removeFromRecentHistory(item.path),
+              },
+              {
+                title: "Move to bin",
+                icon: "trash",
+                danger: true,
+                onClick: () => this.moveToBin(item.path),
+              },
+            ]);
+          });
         }
-
-        event.preventDefault();
-        this.selectedSuggestionIndex = Math.max(0, this.selectedSuggestionIndex - 1);
-        this.renderSuggestions();
-        return;
       }
-
-      if (event.key === "Escape") {
-        this.currentSuggestions = [];
-        this.renderSuggestions();
-        return;
-      }
-
-      if (event.key !== "Enter") {
-        return;
-      }
-
-      const match = this.currentSuggestions[this.selectedSuggestionIndex] || this.plugin.searchVaultEntries(this.query, 1)[0];
-      if (!match) {
-        return;
-      }
-
-      event.preventDefault();
-      this.activateSearchEntry(match);
-    });
-
-    this.searchComponent.clearButtonEl.addEventListener("click", () => {
-      this.query = "";
-      this.currentSuggestions = [];
-      this.selectedSuggestionIndex = 0;
-      this.renderSuggestions();
-      this.renderPanel();
-    });
-
-    this.renderSuggestions();
-    this.renderPanel();
-
-    if (preserveScroll) {
-      contentEl.scrollTop = previousScrollTop;
     }
 
-    if (focusSearch) {
-      window.setTimeout(() => this.focusSearch(), 0);
+    // Section 4b: Tasks (self-contained, with add / complete / delete / reorder)
+    if (this.plugin.settings.showTasks !== false) {
+      const section = shell.createDiv({ cls: "local-start-page__section" });
+      this.renderSectionHeader(section, "Tasks", "check-square");
+
+      // "+" button on the right of the header
+      const headerEl = section.querySelector(".local-start-page__section-title");
+      if (headerEl) {
+        const addBtn = headerEl.createEl("button", { cls: "local-start-page__section-action" });
+        addBtn.type = "button";
+        addBtn.setAttr("aria-label", "Add task");
+        setIcon(addBtn, "plus");
+        addBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.promptAddTask();
+        });
+      }
+
+      const tasks = this.plugin.settings.tasks || [];
+      if (tasks.length) {
+        const list = section.createDiv({ cls: "local-start-page__task-list" });
+        for (const task of tasks) {
+          const row = list.createDiv({ cls: "local-start-page__task-row" });
+          row.setAttr("data-task-id", task.id);
+          row.draggable = true;
+          if (task.done) row.addClass("is-done");
+
+          const box = row.createEl("button", { cls: "local-start-page__task-check" });
+          box.type = "button";
+          box.setAttr("aria-label", task.done ? "Mark incomplete" : "Mark complete");
+          setIcon(box, task.done ? "check" : "square");
+          box.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.plugin.toggleLocalTask(task.id).then(() => this.refreshViews());
+          });
+
+          const label = row.createDiv({ cls: "local-start-page__task-label" });
+          label.textContent = task.text;
+          label.addEventListener("click", () => {
+            if (task.done) return;
+            this.plugin.toggleLocalTask(task.id).then(() => this.refreshViews());
+          });
+
+          // three dot menu (delete)
+          const dots = row.createEl("button", { cls: "local-start-page__task-menu" });
+          dots.type = "button";
+          dots.setAttr("aria-label", "Task options");
+          setIcon(dots, "more-vertical");
+          dots.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.showContextMenu(e, [
+              {
+                title: "Delete task",
+                icon: "trash",
+                danger: true,
+                onClick: () => { this.plugin.removeTask(task.id).then(() => this.refreshViews()); },
+              },
+            ]);
+          });
+
+          // drag and drop reorder
+          row.addEventListener("dragstart", (e) => {
+            row.addClass("is-dragging");
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", task.id);
+          });
+          row.addEventListener("dragend", () => row.removeClass("is-dragging"));
+          row.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            row.addClass("is-drop-target");
+          });
+          row.addEventListener("dragleave", () => row.removeClass("is-drop-target"));
+          row.addEventListener("drop", (e) => {
+            e.preventDefault();
+            row.removeClass("is-drop-target");
+            const draggedId = e.dataTransfer.getData("text/plain");
+            if (!draggedId || draggedId === task.id) return;
+            const ids = (this.plugin.settings.tasks || []).map((t) => t.id);
+            const from = ids.indexOf(draggedId);
+            const to = ids.indexOf(task.id);
+            if (from === -1 || to === -1) return;
+            const moved = ids.splice(from, 1)[0];
+            ids.splice(to, 0, moved);
+            this.plugin.reorderTasks(ids).then(() => this.refreshViews());
+          });
+        }
+      } else {
+        section.createEl("p", { cls: "local-start-page__section-empty", text: "No tasks yet. Use the + button to add one." });
+      }
     }
+
+    // Section 5: Bookmarks (added back from original)
+    if (this.plugin.settings.showBookmarks !== false) {
+      this.renderBookmarksPanel(shell);
+    }
+
+    // Section 6: Favorites tray (added back from original)
+    if (this.plugin.settings.showFavorites !== false) {
+      this.renderFavoritesTray(shell);
+    }
+
+    // Full homepage layout always: vault tree then Bin at the bottom.
+    if (this.plugin.settings.showVaultTree !== false) {
+      const treeSection = shell.createDiv({ cls: "local-start-page__section local-start-page__vault-tree-section" });
+      this.renderSectionHeader(treeSection, "Vault tree", "folder-tree");
+      this.treeBodyEl = treeSection.createDiv({ cls: "local-start-page__vault-tree-body" });
+      this.renderFileTree(this.treeBodyEl);
+    }
+
+    // Bin: the very last section at the bottom of the homepage
+    if (this.plugin.settings.showDeleted !== false) {
+      this.renderBin(shell);
+    }
+
+    // Tag this view's workspace tab header so CSS can shorten ONLY the Home tab
+    // (left to right) without affecting any other tabs or windows.
+    this.tagHomeTab();
+
+    if (preserveScroll) { contentEl.scrollTop = previousScrollTop; }
+  }
+
+  // Add a marker class to the workspace tab header that belongs to this Home view.
+  tagHomeTab() {
+    try {
+      const all = document.querySelectorAll(".workspace-tab-header");
+      for (const tabHeader of all) {
+        if ((tabHeader.textContent || "").includes("Home")) {
+          tabHeader.addClass("local-start-page__home-tab");
+        }
+      }
+    } catch (e) { /* non-critical */ }
+  }
+
+  renderSectionHeader(container, label, icon) {
+    const header = container.createDiv({ cls: "local-start-page__section-title" });
+    if (icon) {
+      const iconWrap = header.createSpan({ cls: "local-start-page__section-icon" });
+      setIcon(iconWrap, icon);
+    }
+    header.createSpan({ text: label });
+  }
+
+  // Forward to the plugin's re-render so all in-homepage actions refresh the view.
+  refreshViews(options) {
+    this.plugin.refreshViews(options);
+  }
+
+  promptAddTask() {
+    const section = this.contentEl.querySelector(".local-start-page__section");
+    // find the Tasks section specifically
+    const sections = Array.from(this.contentEl.querySelectorAll(".local-start-page__section"));
+    const tasksSection = sections.find((s) => /Tasks?/.test(s.querySelector(".local-start-page__section-title")?.textContent || ""));
+    if (!tasksSection) return;
+    // avoid duplicate input
+    if (tasksSection.querySelector(".local-start-page__task-input-row")) {
+      tasksSection.querySelector(".local-start-page__task-input-row input")?.focus();
+      return;
+    }
+    const inputRow = tasksSection.createDiv({ cls: "local-start-page__task-input-row" });
+    const input = inputRow.createEl("input", { cls: "local-start-page__task-input", type: "text", placeholder: "New task…" });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const val = input.value.trim();
+        if (val) {
+          this.plugin.addTask(val).then(() => this.refreshViews());
+        }
+      } else if (e.key === "Escape") {
+        inputRow.remove();
+      }
+    });
+    input.addEventListener("blur", () => {
+      if (!input.value.trim()) inputRow.remove();
+    });
+    input.focus();
+  }
+
+  renderQuickActions(container) {
+    const row = container.createDiv({ cls: "local-start-page__quick-actions" });
+
+    // Open last note -> dropdown of the last closed notes
+    const reopenWrap = row.createDiv({ cls: "local-start-page__dropdown" });
+    const reopen = reopenWrap.createEl("button", { cls: "local-start-page__quick-action-button local-start-page__dropdown-trigger" });
+    reopen.type = "button";
+    setIcon(reopen.createSpan({ cls: "local-start-page__quick-action-icon" }), "history");
+    reopen.createSpan({ text: "Open last note" });
+    const reopenMenu = reopenWrap.createDiv({ cls: "local-start-page__dropdown-list" });
+    const recentClosed = (this.plugin.settings.recentHistory || []).slice(0, 5);
+    if (recentClosed.length) {
+      for (const path of recentClosed) {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        const title = file instanceof TFile ? file.basename : path.split("/").pop().replace(/\.md$/, "");
+        const option = reopenMenu.createEl("button", { cls: "local-start-page__dropdown-item", text: title });
+        option.type = "button";
+        option.addEventListener("click", async () => {
+          reopenMenu.toggleClass("is-visible", false);
+          const target = this.app.vault.getAbstractFileByPath(path);
+          if (target instanceof TFile) { this.openFileNew(path); }
+        });
+      }
+    } else {
+      reopenMenu.createEl("button", { cls: "local-start-page__dropdown-item", text: "No recently closed notes", disabled: true });
+    }
+    reopen.addEventListener("click", (e) => {
+      e.stopPropagation();
+      reopenMenu.toggleClass("is-visible", !reopenMenu.hasClass("is-visible"));
+    });
+    // close the menu when clicking anywhere outside it
+    document.addEventListener("click", (ev) => {
+      if (reopenMenu.hasClass("is-visible") && !reopenWrap.contains(ev.target)) {
+        reopenMenu.toggleClass("is-visible", false);
+      }
+    });
+
+    // New temporary note -> creates into the temporary folder
+    const newNote = row.createEl("button", { cls: "local-start-page__quick-action-button" });
+    newNote.type = "button";
+    setIcon(newNote.createSpan({ cls: "local-start-page__quick-action-icon" }), "file-plus");
+    newNote.createSpan({ text: "New temporary note" });
+    newNote.addEventListener("click", async () => {
+      await this.plugin.createTemporaryNote(this.app.workspace.getLeaf(true), this.plugin.settings.tempFolder);
+    });
+  }
+
+  showContextMenu(event, items) {
+    event.preventDefault();
+    event.stopPropagation();
+    const { Menu } = require("obsidian");
+    const menu = new Menu();
+    for (const item of items) {
+      menu.addItem((mi) => {
+        mi.setTitle(item.title);
+        if (item.icon) mi.setIcon(item.icon);
+        if (item.danger) mi.setWarning(true);
+        mi.onClick(() => item.onClick());
+      });
+    }
+    menu.showAtPosition({ x: event.clientX, y: event.clientY });
+  }
+
+  // Open a file in a brand-new TAB so the Home view itself is never replaced or
+  // resized. Falls back to a new split leaf if "tab" isn't supported.
+  openFileNew(path) {
+    let leaf;
+    try {
+      leaf = this.app.workspace.getLeaf("tab");
+    } catch (e) {
+      leaf = this.app.workspace.getLeaf(true);
+    }
+    this.plugin.openFile(path, leaf);
+  }
+
+  // Move a note into the Bin (local trash) from any section's right-click menu.
+  moveToBin(path) {
+    if (typeof path !== "string" || !path.trim()) return;
+    this.plugin.trashNote(path).then(() => this.refreshViews());
+  }
+
+  async removeFromRecentHistory(path) {
+    if (typeof path !== "string" || !path.trim()) return;
+    const normalizedPath = path.trim();
+    this.settings.recentHistory = this.settings.recentHistory.filter((p) => p !== normalizedPath);
+    await this.saveData(this.settings);
+    this.refreshViews();
   }
 
   renderFileTree(container) {
@@ -586,6 +738,8 @@ class LocalStartPageView extends ItemView {
     details.style.setProperty("--tree-depth", String(depth));
     details.open = this.shouldAutoOpenTreeFolder(folder.path, depth);
     details.setAttr("data-folder-path", folder.path);
+    // Drop target for drag and drop
+    details.setAttr("data-drop-target", "true");
 
     const summary = details.createEl("summary", { cls: "local-start-page__tree-summary" });
     summary.setAttr("data-folder-path", folder.path);
@@ -607,6 +761,32 @@ class LocalStartPageView extends ItemView {
       text: `${noteCounts.get(folder.path) || 0}`,
     });
 
+    // Drag-and-drop event handlers for folder drop target
+    summary.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      summary.addClass("is-drag-over");
+    });
+    summary.addEventListener("dragleave", (e) => {
+      // Only remove if leaving the summary entirely
+      if (!summary.contains(e.relatedTarget)) {
+        summary.removeClass("is-drag-over");
+      }
+    });
+    summary.addEventListener("drop", (e) => {
+      e.preventDefault();
+      summary.removeClass("is-drag-over");
+      const data = e.dataTransfer.getData("application/json");
+      if (data) {
+        try {
+          const paths = JSON.parse(data);
+          this.handleDropToFolder(paths, folder.path);
+        } catch (err) {
+          console.error("Failed to parse drop data:", err);
+        }
+      }
+    });
+
     const childrenWrap = details.createDiv({ cls: "local-start-page__tree-children" });
     const childrenInner = childrenWrap.createDiv({ cls: "local-start-page__tree-children-inner" });
     this.renderFolderChildren(childrenInner, folder, noteCounts, depth + 1);
@@ -618,6 +798,13 @@ class LocalStartPageView extends ItemView {
     });
     button.type = "button";
     button.style.setProperty("--tree-depth", String(depth));
+    button.draggable = true;
+    button.setAttr("data-file-path", file.path);
+
+    const isSelected = this.selectedItems.has(file.path);
+    if (isSelected) {
+      button.addClass("is-selected");
+    }
 
     const iconWrap = button.createSpan({ cls: "local-start-page__tree-node-icon" });
     setIcon(iconWrap, "file-text");
@@ -626,7 +813,107 @@ class LocalStartPageView extends ItemView {
       text: file.extension === "md" ? file.basename : file.name,
     });
 
-    button.addEventListener("click", () => this.plugin.openFile(file.path, this.leaf));
+    // Click handler with selection support
+    button.addEventListener("click", (event) => {
+      const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+      const ctrlOrMeta = isMac ? event.metaKey : event.ctrlKey;
+      const shiftKey = event.shiftKey;
+
+      // Cmd/Ctrl+Click: Open in new tab
+      if (ctrlOrMeta) {
+        event.preventDefault();
+        let leaf;
+        try { leaf = this.app.workspace.getLeaf("tab"); } catch (e) { leaf = this.app.workspace.getLeaf(true); }
+        this.plugin.openFile(file.path, leaf);
+        return;
+      }
+
+      // Handle selection with keyboard modifiers
+      this.toggleItemSelection(file.path, -1, event);
+
+      // If not selecting (no shift modifier), also trigger the original action
+      if (!shiftKey) {
+        this.openFileNew(file.path);
+      }
+    });
+
+    // Keyboard support for tree files
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+        const ctrlOrMeta = isMac ? event.metaKey : event.ctrlKey;
+        const shiftKey = event.shiftKey;
+        if (shiftKey || ctrlOrMeta) {
+          this.toggleItemSelection(file.path, -1, event);
+        } else {
+          this.plugin.openFile(file.path, leaf);
+        }
+      }
+      // Escape to clear selection
+      if (event.key === "Escape" && this.selectedItems.size > 0) {
+        this.clearSelection();
+      }
+    });
+
+    // Drag-and-drop event handlers for draggable files
+    button.addEventListener("dragstart", (e) => {
+      const paths = this.selectedItems.size > 0 && this.selectedItems.has(file.path)
+        ? Array.from(this.selectedItems)
+        : [file.path];
+      e.dataTransfer.setData("application/json", JSON.stringify(paths));
+
+      e.dataTransfer.effectAllowed = "move";
+      button.addClass("is-dragging");
+    });
+    button.addEventListener("dragend", () => {
+      button.removeClass("is-dragging");
+    });
+
+    // Right-click: add to favorites (pin) or bookmark globally
+    button.addEventListener("contextmenu", (e) => {
+      const alreadyPinned = this.plugin.isPinnedPath(file.path);
+      this.showContextMenu(e, [
+        {
+          title: alreadyPinned ? "Remove from favorites" : "Add to favorites",
+          icon: alreadyPinned ? "star-off" : "star",
+          onClick: () => { this.plugin.togglePinnedItem(file.path); this.refreshViews(); },
+        },
+        {
+          title: "Bookmark",
+          icon: "bookmark",
+          onClick: async () => { await this.plugin.addGlobalBookmark(file.path); this.refreshViews(); },
+        },
+        {
+          title: "Move to bin",
+          icon: "trash",
+          danger: true,
+          onClick: () => this.moveToBin(file.path),
+        },
+      ]);
+    });
+  }
+
+  async handleDropToFolder(paths, targetFolderPath) {
+    let moved = 0;
+    for (const path of paths) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile) {
+        const newPath = targetFolderPath
+          ? `${targetFolderPath}/${file.name}`
+          : file.name;
+        try {
+          await this.app.fileManager.renameFile(file, newPath);
+          moved++;
+        } catch (error) {
+          console.error("Failed to move file:", path, error);
+        }
+      }
+    }
+    if (moved > 0) {
+      this.clearSelection();
+      new Notice(`Moved ${moved} note${moved === 1 ? "" : "s"}`);
+    }
   }
 
   shouldAutoOpenTreeFolder(path, depth) {
@@ -805,16 +1092,141 @@ class LocalStartPageView extends ItemView {
       });
       button.type = "button";
       button.title = bookmark.path;
-      button.addEventListener("click", () => this.plugin.openFile(bookmark.path, this.leaf));
+      button.addEventListener("click", () => this.openFileNew(bookmark.path));
     }
   }
 
+  renderBookmarksPanel(container) {
+    const section = container.createDiv({ cls: "local-start-page__section" });
+    this.renderSectionHeader(section, "Bookmarks", "bookmark");
+    const list = section.createDiv({ cls: "local-start-page__event-list" });
+
+    this.plugin.getBookmarkItems().then((bookmarks) => {
+      if (!bookmarks.length) {
+        section.createEl("p", { cls: "local-start-page__section-empty", text: "No bookmarked notes yet." });
+        return;
+      }
+
+      for (const bookmark of bookmarks.slice(0, 12)) {
+        const row = list.createDiv({ cls: "local-start-page__event-row" });
+        row.createEl("span", { cls: "local-start-page__event-dot" });
+        const text = row.createDiv({ cls: "local-start-page__event-text" });
+        text.createEl("span", { cls: "local-start-page__event-title", text: bookmark.title });
+        text.createEl("span", { cls: "local-start-page__event-path", text: bookmark.path });
+        row.tabIndex = 0;
+        row.setAttr("role", "button");
+        const open = () => this.openFileNew(bookmark.path);
+        row.addEventListener("click", open);
+        row.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+        });
+        row.addEventListener("contextmenu", (e) => {
+          this.showContextMenu(e, [
+            {
+              title: "Remove from bookmarks",
+              icon: "bookmark-minus",
+              onClick: () => { this.plugin.removeBookmarkHint(bookmark.path); this.refreshViews(); },
+            },
+            {
+              title: "Move to bin",
+              icon: "trash",
+              danger: true,
+              onClick: () => this.moveToBin(bookmark.path),
+            },
+          ]);
+        });
+      }
+    });
+  }
+
+  renderFavoritesTray(container) {
+    const section = container.createDiv({ cls: "local-start-page__section" });
+    this.renderSectionHeader(section, "Favorites", "star");
+    const list = section.createDiv({ cls: "local-start-page__event-list" });
+
+    const pinnedItems = this.plugin.getPinnedItems();
+    if (!pinnedItems.length) {
+      section.createEl("p", { cls: "local-start-page__section-empty", text: "No favorites yet. Add pinned notes in settings." });
+      return;
+    }
+
+    for (const item of pinnedItems.slice(0, 12)) {
+      const row = list.createDiv({ cls: "local-start-page__event-row" });
+      row.createEl("span", { cls: "local-start-page__event-dot" });
+      const text = row.createDiv({ cls: "local-start-page__event-text" });
+      text.createEl("span", { cls: "local-start-page__event-title", text: item.label || (item.missing ? `${item.path} (missing)` : item.path.split("/").pop().replace(/\.md$/, "")) });
+      text.createEl("span", { cls: "local-start-page__event-path", text: item.path });
+      if (item.missing) {
+        row.setAttr("aria-disabled", "true");
+        row.addClass("is-missing");
+      } else {
+        row.tabIndex = 0;
+        row.setAttr("role", "button");
+        row.addEventListener("click", () => this.openFileNew(item.path));
+        row.addEventListener("contextmenu", (e) => {
+          this.showContextMenu(e, [
+            {
+              title: "Remove from favorites",
+              icon: "star-off",
+              onClick: () => { this.plugin.togglePinnedItem(item.path); this.refreshViews(); },
+            },
+            {
+              title: "Move to bin",
+              icon: "trash",
+              danger: true,
+              onClick: () => this.moveToBin(item.path),
+            },
+          ]);
+        });
+      }
+    }
+  }
+
+  renderBin(shell) {
+    const section = shell.createDiv({ cls: "local-start-page__section" });
+    this.renderSectionHeader(section, "Bin", "trash");
+
+    // Clear-bin button on the right of the header
+    const headerEl = section.querySelector(".local-start-page__section-title");
+    if (headerEl) {
+      const clearBtn = headerEl.createEl("button", { cls: "local-start-page__section-action" });
+      clearBtn.type = "button";
+      clearBtn.setAttr("aria-label", "Clear bin");
+      setIcon(clearBtn, "trash-2");
+      clearBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await this.plugin.clearBin();
+        this.refreshViews();
+      });
+    }
+
+    const deletedItems = this.plugin.getDeletedItems().map((item) => ({
+      ...item,
+      // Clicking a bin item opens it in a brand-new leaf so Home stays intact.
+      onClick: item.missing ? undefined : () => this.openFileNew(item.path),
+    }));
+
+    const body = section.createDiv({ cls: "local-start-page__bin-body" });
+    this.renderList(
+      deletedItems,
+      "Bin is empty.\n\nNotes rest here as temporary pins until you restore or remove them permanently.",
+      body
+    );
+  }
+
   renderPanel() {
+    console.log("Local Start Page: renderPanel start", this.activeTab);
     if (!this.panelEl || !this.statusEl) {
+      console.log("Local Start Page: renderPanel skipped - missing panelEl/statusEl");
       return;
     }
 
     this.panelEl.empty();
+
+    // Bulk actions toolbar (shown when items are selected)
+    if (this.selectedItems.size > 0) {
+      this.renderBulkActionsToolbar();
+    }
 
     for (const [tabId, button] of this.tabButtons.entries()) {
       button.toggleClass("is-active", !this.query && this.activeTab === tabId);
@@ -845,9 +1257,17 @@ class LocalStartPageView extends ItemView {
     if (this.activeTab === "deleted") {
       const deletedItems = this.plugin.getDeletedItems();
       this.statusEl.setText(
-        deletedItems.length === 0 ? "No deleted notes" : `${deletedItems.length} deleted note${deletedItems.length === 1 ? "" : "s"}`
+        deletedItems.length === 0 ? "Bin is empty" : `${deletedItems.length} note${deletedItems.length === 1 ? "" : "s"} in the bin`
       );
-      this.renderList(deletedItems, "Deleted notes will appear here until you restore or remove them permanently.");
+      // Clear-bin button (right side)
+      const clearBtn = this.panelEl.createDiv({ cls: "local-start-page__clear-bin" });
+      const clearButton = clearBtn.createEl("button", { cls: "local-start-page__clear-bin-button", text: "Clear bin" });
+      clearButton.type = "button";
+      clearButton.addEventListener("click", async () => {
+        await this.plugin.clearBin();
+        this.renderPanel();
+      });
+      this.renderList(deletedItems, "Bin is empty.\n\nNotes rest here as temporary pins until you restore or remove them permanently.");
       return;
     }
 
@@ -866,7 +1286,19 @@ class LocalStartPageView extends ItemView {
       return;
     }
 
-    const recentItems = this.plugin.getRecentItems();
+    if (this.activeTab === "tasks") {
+      const taskItems = this.plugin.getTaskItems(this.plugin.settings.maxTasks, this.plugin.settings.tasksFilterQuery);
+      this.statusEl.setText(
+        taskItems.length === 0 ? "No tasks found" : `${taskItems.length} task${taskItems.length === 1 ? "" : "s"}`
+      );
+      this.renderList(
+        taskItems,
+        "Tasks will appear here when the Tasks plugin is installed and has incomplete tasks."
+      );
+      return;
+    }
+
+    const recentItems = this.plugin.getRecentItems(this.plugin.settings.showTempNotes !== false);
     this.statusEl.setText(
       recentItems.length === 0 ? "No recent notes yet" : `${recentItems.length} recent note${recentItems.length === 1 ? "" : "s"}`
     );
@@ -877,6 +1309,202 @@ class LocalStartPageView extends ItemView {
       })),
       "Open notes and they will appear here."
     );
+  }
+
+  renderBulkActionsToolbar() {
+    const toolbar = this.panelEl.createDiv({ cls: "local-start-page__bulk-toolbar" });
+    const count = toolbar.createEl("span", {
+      cls: "local-start-page__bulk-count",
+      text: `${this.selectedItems.size} item${this.selectedItems.size === 1 ? "" : "s"} selected`,
+    });
+
+    const actions = toolbar.createDiv({ cls: "local-start-page__bulk-actions" });
+
+    // Move to folder
+    const moveBtn = actions.createEl("button", {
+      cls: "local-start-page__bulk-button",
+      text: "Move to folder…",
+    });
+    moveBtn.type = "button";
+    moveBtn.addEventListener("click", () => this.bulkMoveToFolder());
+
+    // Pin/Unpin
+    const pinBtn = actions.createEl("button", {
+      cls: "local-start-page__bulk-button",
+      text: "Pin/Unpin",
+    });
+    pinBtn.type = "button";
+    pinBtn.addEventListener("click", () => this.bulkTogglePin());
+
+    // Delete (move to trash)
+    const deleteBtn = actions.createEl("button", {
+      cls: "local-start-page__bulk-button is-danger",
+      text: "Move to trash",
+    });
+    deleteBtn.type = "button";
+    deleteBtn.addEventListener("click", () => this.bulkTrash());
+
+    // Copy paths
+    const copyBtn = actions.createEl("button", {
+      cls: "local-start-page__bulk-button",
+      text: "Copy paths",
+    });
+    copyBtn.type = "button";
+    copyBtn.addEventListener("click", () => this.bulkCopyPaths());
+
+    // Clear selection
+    const clearBtn = actions.createEl("button", {
+      cls: "local-start-page__bulk-button is-ghost",
+      text: "Clear selection",
+    });
+    clearBtn.type = "button";
+    clearBtn.addEventListener("click", () => this.clearSelection());
+  }
+
+  async bulkMoveToFolder() {
+    // Get all available folders
+    const folders = this.app.vault
+      .getAllLoadedFiles()
+      .filter((entry) => entry instanceof TFolder)
+      .filter((folder) => !folder.path || this.plugin.isSearchablePath(folder.path))
+      .map((folder) => ({
+        title: folder.path === "" ? "Vault root" : folder.name,
+        path: folder.path,
+      }));
+
+    if (!folders.length) {
+      new Notice("No folders available");
+      return;
+    }
+
+    // Create a modal for folder selection
+    const modal = new (require("obsidian").Modal)(this.app);
+    modal.titleEl.setText("Move to folder");
+    const container = modal.contentEl;
+    container.addClass("local-start-page__folder-modal");
+
+    const searchInput = container.createEl("input", {
+      type: "text",
+      placeholder: "Search folders…",
+      cls: "local-start-page__folder-search",
+    });
+
+    const folderList = container.createDiv({ cls: "local-start-page__folder-list" });
+
+    const renderFolderList = (filter = "") => {
+      folderList.empty();
+      const filtered = folders.filter((f) =>
+        f.title.toLowerCase().includes(filter.toLowerCase())
+      );
+      for (const folder of filtered) {
+        const btn = folderList.createEl("button", {
+          cls: "local-start-page__folder-option",
+          text: folder.title || folder.path,
+        });
+        btn.type = "button";
+        btn.addEventListener("click", async () => {
+          await this.executeBulkMove(folder.path);
+          modal.close();
+        });
+      }
+    };
+
+    renderFolderList();
+    searchInput.addEventListener("input", (e) => renderFolderList(e.target.value));
+    searchInput.focus();
+
+    modal.open();
+  }
+
+  async executeBulkMove(targetFolderPath) {
+    const paths = Array.from(this.selectedItems);
+    let moved = 0;
+    for (const path of paths) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile) {
+        const newPath = targetFolderPath
+          ? `${targetFolderPath}/${file.name}`
+          : file.name;
+        try {
+          await this.app.fileManager.renameFile(file, newPath);
+          moved++;
+        } catch (error) {
+          console.error("Failed to move file:", path, error);
+        }
+      }
+    }
+    this.clearSelection();
+    new Notice(`Moved ${moved} note${moved === 1 ? "" : "s"}`);
+  }
+
+  async bulkTogglePin() {
+    const paths = Array.from(this.selectedItems);
+    let toggled = 0;
+    for (const path of paths) {
+      await this.plugin.togglePinnedItem(path);
+      toggled++;
+    }
+    this.clearSelection();
+    new Notice(`${toggled} note${toggled === 1 ? "" : "s"} pinned/unpinned`);
+  }
+
+  async bulkTrash() {
+    const paths = Array.from(this.selectedItems);
+    let trashed = 0;
+    for (const path of paths) {
+      await this.plugin.trashNote(path);
+      trashed++;
+    }
+    this.clearSelection();
+    new Notice(`Moved ${trashed} note${trashed === 1 ? "" : "s"} to trash`);
+  }
+
+  bulkCopyPaths() {
+    const paths = Array.from(this.selectedItems);
+    navigator.clipboard.writeText(paths.join("\n"));
+    this.clearSelection();
+    new Notice(`Copied ${paths.length} path${paths.length === 1 ? "" : "s"}`);
+  }
+
+  openSelectedInNewWindows() {
+    const paths = Array.from(this.selectedItems);
+    for (const path of paths) {
+      const leaf = this.app.workspace.getLeaf(true);
+      this.openFile(path, leaf);
+    }
+    this.clearSelection();
+    new Notice(`Opened ${paths.length} note${paths.length === 1 ? "" : "s"} in new windows`);
+  }
+
+  clearSelection() {
+    this.selectedItems.clear();
+    this.lastSelectedIndex = -1;
+    this.renderPanel();
+  }
+
+  toggleItemSelection(path, index, event) {
+    const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+    const ctrlOrMeta = isMac ? event.metaKey : event.ctrlKey;
+    const shiftKey = event.shiftKey;
+
+    if (shiftKey) {
+      // Shift+Click: Toggle selection (add/remove from selection)
+      if (this.selectedItems.has(path)) {
+        this.selectedItems.delete(path);
+      } else {
+        this.selectedItems.add(path);
+        this.lastSelectedIndex = index;
+      }
+    } else if (ctrlOrMeta) {
+      // Cmd/Ctrl+Click: Don't change selection, handled by click handler for opening in new window
+      return;
+    } else {
+      // Single click (no modifier): Clear selection, select this item
+      this.selectedItems.clear();
+      this.selectedItems.add(path);
+      this.lastSelectedIndex = index;
+    }
+    this.renderPanel();
   }
 
   createNoteActions(path) {
@@ -896,8 +1524,8 @@ class LocalStartPageView extends ItemView {
     ];
   }
 
-  renderList(items, emptyMessage) {
-    const list = this.panelEl.createDiv({ cls: "local-start-page__list" });
+  renderList(items, emptyMessage, container) {
+    const list = (container || this.panelEl).createDiv({ cls: "local-start-page__list" });
 
     if (!items.length) {
       list.createEl("p", {
@@ -907,10 +1535,16 @@ class LocalStartPageView extends ItemView {
       return;
     }
 
-    for (const item of items) {
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
       const card = list.createDiv({ cls: "local-start-page__item" });
       const isInteractive = typeof item.onClick === "function" && !item.missing;
+      const isSelected = this.selectedItems.has(item.path);
       card.setAttr("role", isInteractive ? "button" : "note");
+
+      if (isSelected) {
+        card.addClass("is-selected");
+      }
 
       if (isInteractive) {
         card.tabIndex = 0;
@@ -930,16 +1564,13 @@ class LocalStartPageView extends ItemView {
       });
 
       if (Array.isArray(item.actions) && item.actions.length) {
-        const actionRow = titleRow.createDiv({ cls: "local-start-page__item-actions" });
+        const actionRow = titleRow.createDiv({ cls: "local-start-page__list-actions" });
         for (const action of item.actions) {
           const actionButton = actionRow.createEl("button", {
-            cls: "local-start-page__action-button",
+            cls: `local-start-page__list-action-button ${action.className || ""}`,
           });
           actionButton.type = "button";
           actionButton.setAttr("aria-label", action.label);
-          if (action.className) {
-            actionButton.addClass(action.className);
-          }
           setIcon(actionButton, action.icon);
           actionButton.addEventListener("click", async (event) => {
             event.preventDefault();
@@ -947,6 +1578,29 @@ class LocalStartPageView extends ItemView {
             actionButton.disabled = true;
             try {
               await action.onClick();
+            } finally {
+              actionButton.disabled = false;
+            }
+          });
+        }
+      }
+
+      // Task-specific actions (for tasks tab)
+      if (Array.isArray(item.taskActions) && item.taskActions.length) {
+        const taskActionRow = titleRow.createDiv({ cls: "local-start-page__list-actions" });
+        for (const action of item.taskActions) {
+          const actionButton = taskActionRow.createEl("button", {
+            cls: `local-start-page__list-action-button ${action.className || ""}`,
+          });
+          actionButton.type = "button";
+          actionButton.setAttr("aria-label", action.label);
+          setIcon(actionButton, action.icon);
+          actionButton.addEventListener("click", async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            actionButton.disabled = true;
+            try {
+              await action.onClick(event);
             } finally {
               actionButton.disabled = false;
             }
@@ -962,11 +1616,58 @@ class LocalStartPageView extends ItemView {
       if (item.missing) {
         card.addClass("is-missing");
       } else if (isInteractive) {
-        card.addEventListener("click", item.onClick);
+        card.addEventListener("click", (event) => {
+          // Handle selection with keyboard modifiers
+          this.toggleItemSelection(item.path, index, event);
+          
+          const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+          const ctrlOrMeta = isMac ? event.metaKey : event.ctrlKey;
+          const shiftKey = event.shiftKey;
+          
+          // Cmd/Ctrl+Click: Open in new window (don't change selection)
+          if (ctrlOrMeta) {
+            event.preventDefault();
+            const leaf = this.app.workspace.getLeaf(true);
+            item.onClick(leaf);
+            return;
+          }
+          
+          // If not selecting (no shift modifier), also trigger the original action
+          if (!shiftKey) {
+            // Small delay to allow selection state to update
+            setTimeout(() => item.onClick(), 0);
+          }
+        });
+        
         card.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            item.onClick();
+            const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+            const ctrlOrMeta = isMac ? event.metaKey : event.ctrlKey;
+            const shiftKey = event.shiftKey;
+            
+            if (shiftKey || ctrlOrMeta) {
+              this.toggleItemSelection(item.path, index, event);
+            } else {
+              item.onClick();
+            }
+          }
+          // Ctrl/Cmd+A to select all
+          if ((event.ctrlKey || event.metaKey) && event.key === "a") {
+            event.preventDefault();
+            for (const i of items) {
+              this.selectedItems.add(i.path);
+            }
+            this.renderPanel();
+          }
+          // Cmd/Ctrl+Enter to open selected in new windows
+          if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && this.selectedItems.size > 1) {
+            event.preventDefault();
+            this.openSelectedInNewWindows();
+          }
+          // Escape to clear selection
+          if (event.key === "Escape" && this.selectedItems.size > 0) {
+            this.clearSelection();
           }
         });
       }
@@ -984,7 +1685,10 @@ class LocalStartPageSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Home" });
+    containerEl.createEl("h2", { text: "Home Page" });
+
+    // General Settings
+    containerEl.createEl("h3", { text: "General", cls: "setting-section-header" });
 
     new Setting(containerEl)
       .setName("Open on startup")
@@ -1029,27 +1733,129 @@ class LocalStartPageSettingTab extends PluginSettingTab {
           })
       );
 
+    // Display Sections
+    containerEl.createEl("h3", { text: "Display Sections", cls: "setting-section-header" });
+    containerEl.createEl("p", { text: "Choose which sections to show on the home page.", cls: "setting-section-description" });
+
     new Setting(containerEl)
-      .setName("Default tab")
-      .setDesc("Which tab to show when no search query is active.")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("recent", "Recent")
-          .addOption("deleted", "Deleted")
-          .addOption("pinned", "Pinned")
-          .setValue(this.plugin.settings.defaultTab)
-          .onChange(async (value) => {
-            this.plugin.settings.defaultTab = value;
-            await this.plugin.saveSettings();
-          })
+      .setName("Show Recent notes")
+      .setDesc("Display the Recent notes tab and list.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showRecent).onChange(async (value) => {
+          this.plugin.settings.showRecent = value;
+          await this.plugin.saveSettings();
+        })
       );
 
     new Setting(containerEl)
+      .setName("Show Deleted notes")
+      .setDesc("Display the Deleted notes tab with local trash.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showDeleted).onChange(async (value) => {
+          this.plugin.settings.showDeleted = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Pinned notes")
+      .setDesc("Display the Pinned notes tab.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showPinned).onChange(async (value) => {
+          this.plugin.settings.showPinned = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Tasks")
+      .setDesc("Display a Tasks tab showing incomplete tasks from the Tasks plugin (requires Tasks plugin).")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showTasks).onChange(async (value) => {
+          this.plugin.settings.showTasks = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Temporary notes in Recent")
+      .setDesc("Include temporary notes in the Recent notes list.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showTempNotes).onChange(async (value) => {
+          this.plugin.settings.showTempNotes = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Search bar")
+      .setDesc("Display the search bar and live suggestions.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showSearch).onChange(async (value) => {
+          this.plugin.settings.showSearch = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Vault tree")
+      .setDesc("Display the expandable vault folder tree on the right.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showVaultTree).onChange(async (value) => {
+          this.plugin.settings.showVaultTree = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Bookmarks panel")
+      .setDesc("Display a dedicated bookmarks section on the home view.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showBookmarks).onChange(async (value) => {
+          this.plugin.settings.showBookmarks = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Favorites tray")
+      .setDesc("Display a quick-access pinned notes tray on the home view.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showFavorites).onChange(async (value) => {
+          this.plugin.settings.showFavorites = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Focus mode")
+      .setDesc("Hide extra chrome and keep the home view minimal for focused navigation.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.focusMode).onChange(async (value) => {
+          this.plugin.settings.focusMode = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Stats cards")
+      .setDesc("Display file count, notes added today, and bookmarks summary cards.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showStats).onChange(async (value) => {
+          this.plugin.settings.showStats = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    // Limits
+    containerEl.createEl("h3", { text: "Limits", cls: "setting-section-header" });
+
+    new Setting(containerEl)
       .setName("Recent notes limit")
-      .setDesc("Maximum number of recent notes to show.")
+      .setDesc("Maximum number of recent notes to show on the homepage (max 15).")
       .addSlider((slider) =>
         slider
-          .setLimits(4, 20, 1)
+          .setLimits(1, 15, 1)
           .setValue(this.plugin.settings.maxRecent)
           .setDynamicTooltip()
           .onChange(async (value) => {
@@ -1063,7 +1869,7 @@ class LocalStartPageSettingTab extends PluginSettingTab {
       .setDesc("Maximum number of live search suggestions to show below the search bar.")
       .addSlider((slider) =>
         slider
-          .setLimits(5, 40, 1)
+          .setLimits(5, 50, 1)
           .setValue(this.plugin.settings.maxSearchResults)
           .setDynamicTooltip()
           .onChange(async (value) => {
@@ -1071,6 +1877,122 @@ class LocalStartPageSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName("Max tasks to show")
+      .setDesc("Maximum number of tasks to display in the Tasks tab.")
+      .addSlider((slider) =>
+        slider
+          .setLimits(3, 30, 1)
+          .setValue(this.plugin.settings.maxTasks)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.maxTasks = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Tasks Settings
+    containerEl.createEl("h3", { text: "Tasks", cls: "setting-section-header" });
+    containerEl.createEl("p", { text: "Requires the Tasks community plugin to be installed and enabled.", cls: "setting-section-description" });
+
+    new Setting(containerEl)
+      .setName("Tasks filter query")
+      .setDesc("Tasks query string to filter tasks (e.g., '#work', 'due before next week', 'not done'). Leave empty for all incomplete tasks.")
+      .addText((text) =>
+        text
+          .setPlaceholder("#work OR due before next week")
+          .setValue(this.plugin.settings.tasksFilterQuery)
+          .onChange(async (value) => {
+            this.plugin.settings.tasksFilterQuery = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Temporary Notes
+    containerEl.createEl("h3", { text: "Temporary Notes", cls: "setting-section-header" });
+
+    new Setting(containerEl)
+      .setName("Temporary notes folder")
+      .setDesc("Folder path where temporary notes are created (relative to vault root).")
+      .addText((text) =>
+        text
+          .setPlaceholder("temporary")
+          .setValue(this.plugin.settings.tempFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.tempFolder = value.trim() || DEFAULT_SETTINGS.tempFolder;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Appearance
+    containerEl.createEl("h3", { text: "Appearance", cls: "setting-section-header" });
+
+    new Setting(containerEl)
+      .setName("Compact ribbon menu")
+      .setDesc("When enabled, clicking the home ribbon icon shows a compact popover menu instead of opening the full home view. Disable to always open the full view.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.compactRibbonMenu).onChange(async (value) => {
+          this.plugin.settings.compactRibbonMenu = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    // Homepage Header
+    containerEl.createEl("h3", { text: "Homepage Header", cls: "setting-section-header" });
+
+    new Setting(containerEl)
+      .setName("Show greeting header")
+      .setDesc("Display a contextual greeting block at the top of the home page.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showGreeting).onChange(async (value) => {
+          this.plugin.settings.showGreeting = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Greeting title")
+      .setDesc("Short title shown in the home greeting header.")
+      .addText((text) =>
+        text
+          .setPlaceholder("Home")
+          .setValue(this.plugin.settings.greetingTitle)
+          .onChange(async (value) => {
+            this.plugin.settings.greetingTitle = value.trim() || DEFAULT_SETTINGS.greetingTitle;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Upcoming Widget
+    containerEl.createEl("h3", { text: "Upcoming Widget", cls: "setting-section-header" });
+
+    new Setting(containerEl)
+      .setName("Show upcoming widget")
+      .setDesc("Display a quick list of notes opened or created today on the home page.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showUpcoming).onChange(async (value) => {
+          this.plugin.settings.showUpcoming = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Upcoming max items")
+      .setDesc("Maximum number of today notes shown in the upcoming widget.")
+      .addSlider((slider) =>
+        slider
+          .setLimits(3, 20, 1)
+          .setValue(this.plugin.settings.upcomingMaxItems)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.upcomingMaxItems = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Pinned Notes
+    containerEl.createEl("h3", { text: "Pinned Notes", cls: "setting-section-header" });
 
     new Setting(containerEl)
       .setName("Pinned notes")
@@ -1085,6 +2007,9 @@ class LocalStartPageSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+
+    // Actions
+    containerEl.createEl("h3", { text: "Actions", cls: "setting-section-header" });
 
     new Setting(containerEl)
       .setName("Open home page now")
@@ -1106,8 +2031,13 @@ module.exports = class LocalStartPagePlugin extends Plugin {
 
     this.registerView(VIEW_TYPE_START_PAGE, (leaf) => new LocalStartPageView(leaf, this));
 
-    this.addRibbonIcon("house", "Open home", async () => {
-      await this.activateView({ replaceCurrent: false });
+    // Ribbon icon, show compact menu or open full view based on settings
+    this.addRibbonIcon("house", "Open home", async (evt) => {
+      if (this.settings.compactRibbonMenu !== false) {
+        this.showCompactHomeMenu(evt);
+      } else {
+        await this.activateView({ replaceCurrent: false });
+      }
     });
 
     this.addCommand({
@@ -1135,14 +2065,6 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "create-temp-note",
-      name: "Create temporary note",
-      callback: async () => {
-        await this.createTemporaryNote(this.app.workspace.getLeaf(true));
-      },
-    });
-
-    this.addCommand({
       id: "focus-home-search",
       name: "Focus home search",
       callback: async () => {
@@ -1154,12 +2076,30 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "create-temp-note",
+      name: "Create temporary note",
+      callback: async () => {
+        await this.createTemporaryNote(this.app.workspace.getLeaf(true));
+      },
+    });
+
+    // Embeddable dashboard note , opens the plugin home view as a leaf.
+    this.addCommand({
+      id: "open-embed-home-note",
+      name: "Open home as dashboard note",
+      callback: async ({ sourceLeaf }) => {
+        await this.activateView({ replaceCurrent: !!sourceLeaf });
+      },
+    });
+
     this.addSettingTab(new LocalStartPageSettingTab(this.app, this));
 
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         this.syncClosedNoteState();
         this.maybeRestoreHomeView();
+        this.tagHomeTabs();
       })
     );
 
@@ -1167,61 +2107,15 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       this.app.workspace.on("active-leaf-change", () => {
         this.syncClosedNoteState();
         this.maybeRestoreHomeView();
+        this.tagHomeTabs();
       })
     );
 
-    this.registerEvent(
-      this.app.workspace.on("file-open", async (file) => {
-        if (!file || file.extension !== "md") {
-          return;
-        }
-
-        const nextHistory = [file.path, ...this.settings.recentHistory.filter((path) => path !== file.path)].slice(
-          0,
-          HISTORY_LIMIT
-        );
-
-        this.settings.recentHistory = nextHistory;
-        const folderPath = getParentFolderPath(file.path) || "";
-        this.settings.folderHistory = [folderPath, ...this.settings.folderHistory.filter((path) => path !== folderPath)].slice(
-          0,
-          HISTORY_LIMIT
-        );
-        await this.saveData(this.settings);
-        this.refreshViews();
-      })
-    );
-
-    this.registerEvent(
-      this.app.vault.on("rename", () => {
-        this.refreshViews();
-      })
-    );
-
-    this.registerEvent(
-      this.app.vault.on("delete", () => {
-        this.refreshViews();
-      })
-    );
-
-    this.registerEvent(
-      this.app.vault.on("create", () => {
-        this.refreshViews();
-      })
-    );
-
-    this.registerEvent(
-      this.app.vault.on("modify", (file) => {
-        if (!file) {
-          return;
-        }
-
-        const bookmarkPath = `${this.app.vault.configDir}/bookmarks.json`;
-        if (file.path === bookmarkPath || file.extension === "md") {
-          this.refreshViews();
-        }
-      })
-    );
+    // NOTE: The vault event listeners that previously called refreshViews() on
+    // every rename/delete/create/modify have been removed. The homepage is a fixed
+    // dashboard , it must not rebuild itself spontaneously while a note is opened
+    // or edited elsewhere. Explicit user actions within the homepage still call
+    // refreshViews() directly, so the UI stays correct after those interactions.
 
     this.app.workspace.onLayoutReady(async () => {
       this.openMarkdownPaths = this.getOpenMarkdownPaths();
@@ -1247,7 +2141,28 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       pinnedItems: normalizePinnedItems(loaded.pinnedItems || DEFAULT_SETTINGS.pinnedItems),
       deletedItems: normalizeDeletedItems(loaded.deletedItems || DEFAULT_SETTINGS.deletedItems),
       recentHistory: normalizeStringHistory(loaded.recentHistory),
+      removedBookmarks: normalizeStringHistory(loaded.removedBookmarks),
       folderHistory: normalizeStringHistory(loaded.folderHistory),
+      // Ensure boolean defaults for new settings
+      showRecent: loaded.showRecent ?? DEFAULT_SETTINGS.showRecent,
+      // Clamp recent-notes limit to the supported range (1..15)
+      maxRecent: Math.min(15, Math.max(1, Number(loaded.maxRecent) || DEFAULT_SETTINGS.maxRecent)),
+      showDeleted: loaded.showDeleted ?? DEFAULT_SETTINGS.showDeleted,
+      showPinned: loaded.showPinned ?? DEFAULT_SETTINGS.showPinned,
+      showTasks: loaded.showTasks ?? DEFAULT_SETTINGS.showTasks,
+      showTempNotes: loaded.showTempNotes ?? DEFAULT_SETTINGS.showTempNotes,
+      showSearch: loaded.showSearch ?? DEFAULT_SETTINGS.showSearch,
+      showVaultTree: loaded.showVaultTree ?? DEFAULT_SETTINGS.showVaultTree,
+      showStats: loaded.showStats ?? DEFAULT_SETTINGS.showStats,
+      tasksFilterQuery: typeof loaded.tasksFilterQuery === "string" ? loaded.tasksFilterQuery : DEFAULT_SETTINGS.tasksFilterQuery,
+      maxTasks: Number.isFinite(loaded.maxTasks) ? loaded.maxTasks : DEFAULT_SETTINGS.maxTasks,
+      tasks: Array.isArray(loaded.tasks)
+        ? loaded.tasks
+            .filter((t) => t && typeof t.text === "string")
+            .map((t) => ({ id: String(t.id || `t${Date.now()}-${Math.random().toString(36).slice(2,7)}`), text: t.text, done: Boolean(t.done), created: Number.isFinite(t.created) ? t.created : Date.now() }))
+        : [],
+      tempFolder: typeof loaded.tempFolder === "string" && loaded.tempFolder.trim() ? loaded.tempFolder.trim() : DEFAULT_SETTINGS.tempFolder,
+      compactRibbonMenu: loaded.compactRibbonMenu ?? DEFAULT_SETTINGS.compactRibbonMenu,
     };
 
     if (!this.settings.title || this.settings.title === "Start" || this.settings.title === "Home Page") {
@@ -1257,6 +2172,15 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     if (!["recent", "pinned", "deleted"].includes(this.settings.defaultTab)) {
       this.settings.defaultTab = "recent";
     }
+
+    this.settings.showGreeting = loaded.showGreeting ?? DEFAULT_SETTINGS.showGreeting;
+    this.settings.greetingTitle = typeof loaded.greetingTitle === "string" && loaded.greetingTitle.trim() ? loaded.greetingTitle.trim() : DEFAULT_SETTINGS.greetingTitle;
+    this.settings.showUpcoming = loaded.showUpcoming ?? DEFAULT_SETTINGS.showUpcoming;
+    this.settings.upcomingMaxItems = Number.isFinite(loaded.upcomingMaxItems) ? loaded.upcomingMaxItems : DEFAULT_SETTINGS.upcomingMaxItems;
+    this.settings.showBookmarks = loaded.showBookmarks ?? DEFAULT_SETTINGS.showBookmarks;
+    this.settings.showFavorites = loaded.showFavorites ?? DEFAULT_SETTINGS.showFavorites;
+    this.settings.layoutPreset = ["default", "focus", "minimal"].includes(loaded.layoutPreset) ? loaded.layoutPreset : DEFAULT_SETTINGS.layoutPreset;
+    this.settings.focusMode = loaded.focusMode ?? DEFAULT_SETTINGS.focusMode;
   }
 
   async saveSettings() {
@@ -1293,6 +2217,19 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     if (markdownLeafCount === 0 && homeLeafCount === 0) {
       this.activateView({ replaceCurrent: true });
     }
+  }
+
+  // Tag every Home view's workspace tab header so CSS can shorten ONLY the Home
+  // tab (left to right) without touching other tabs or windows.
+  tagHomeTabs() {
+    try {
+      const tabHeaders = document.querySelectorAll(".workspace-tab-header");
+      for (const tabHeader of tabHeaders) {
+        if ((tabHeader.textContent || "").includes("Home")) {
+          tabHeader.addClass("local-start-page__home-tab");
+        }
+      }
+    } catch (e) { /* non-critical */ }
   }
 
   async activateView({ replaceCurrent }) {
@@ -1336,7 +2273,9 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       const nextClosedPath = removedPaths[0];
       if (nextClosedPath && nextClosedPath !== this.lastClosedNotePath) {
         this.lastClosedNotePath = nextClosedPath;
-        this.refreshViews();
+        // Intentionally do NOT refreshViews(): the homepage must stay fixed when
+        // leaves open/close elsewhere. lastClosedNotePath is still tracked so
+        // "Open last note" keeps working.
       }
     }
 
@@ -1350,10 +2289,14 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       return;
     }
 
-    const leaf = sourceLeaf || this.app.workspace.getMostRecentLeaf() || this.app.workspace.getLeaf(false);
-    if (!leaf || typeof leaf.openFile !== "function") {
-      this.app.workspace.openLinkText(path, "", false, { active: true });
-      return;
+    // Never replace the Home view itself: if no explicit leaf was given, or the
+    // resolved leaf is the Home leaf, open in a brand-new leaf instead.
+    const homeLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_START_PAGE);
+    let leaf = sourceLeaf;
+    if (!leaf || homeLeaves.includes(leaf)) {
+      leaf = this.app.workspace.getLeaf(true);
+    } else if (typeof leaf.openFile !== "function") {
+      leaf = this.app.workspace.getLeaf(true);
     }
 
     leaf.openFile(target, { active: true });
@@ -1386,7 +2329,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       return;
     }
 
-    this.openFile(lastClosed.path, sourceLeaf);
+    this.openFile(lastClosed_path, sourceLeaf);
   }
 
   getRecentlyClosedNotes(limit = HISTORY_LIMIT) {
@@ -1430,27 +2373,32 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     });
   }
 
-  async createTemporaryNote(sourceLeaf) {
-    const folderPath = TEMPORARY_FOLDER;
-    const existingFolder = this.app.vault.getAbstractFileByPath(folderPath);
+  async createTemporaryNote(sourceLeaf, folderPath) {
+    const targetFolder = typeof folderPath === "string" && folderPath.trim() ? folderPath.trim() : this.settings.tempFolder || TEMPORARY_FOLDER;
+    const existingFolder = this.app.vault.getAbstractFileByPath(targetFolder);
     if (!existingFolder) {
-      await this.app.vault.createFolder(folderPath);
+      await this.app.vault.createFolder(targetFolder);
     } else if (!(existingFolder instanceof TFolder)) {
-      throw new Error("A non-folder item already exists at temporary");
+      throw new Error(`A non-folder item already exists at ${targetFolder}`);
     }
 
-    let notePath = `${folderPath}/${UNTITLED_NOTE_NAME}.md`;
+    let notePath = `${targetFolder}/${UNTITLED_NOTE_NAME}.md`;
     let index = 2;
 
     while (this.app.vault.getAbstractFileByPath(notePath)) {
-      notePath = `${folderPath}/${UNTITLED_NOTE_NAME} ${index}.md`;
+      notePath = `${targetFolder}/${UNTITLED_NOTE_NAME} ${index}.md`;
       index += 1;
     }
 
     const file = await this.app.vault.create(notePath, "");
-    this.recordFolderAccess(folderPath);
+    this.settings.recentHistory = [file.path, ...this.settings.recentHistory.filter((path) => path !== file.path)].slice(
+      0,
+      HISTORY_LIMIT
+    );
+    this.recordFolderAccess(targetFolder);
+    await this.saveSettings();
     this.openFile(file.path, sourceLeaf);
-    new Notice("Temporary note created.");
+    new Notice("Note created.");
     return file;
   }
 
@@ -1615,6 +2563,20 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       .filter(Boolean);
   }
 
+  async clearBin() {
+    const items = [...this.settings.deletedItems];
+    if (!items.length) return;
+    for (const item of items) {
+      const target = this.app.vault.getAbstractFileByPath(item.trashPath);
+      if (target instanceof TFile) {
+        try { await this.app.vault.delete(target); } catch (e) { /* ignore individual failures */ }
+      }
+    }
+    this.settings.deletedItems = [];
+    await this.saveSettings();
+    new Notice("Bin cleared.");
+  }
+
   async restoreDeletedNote(trashPath) {
     const deletedItem = this.settings.deletedItems.find((item) => item.trashPath === trashPath);
     if (!deletedItem) {
@@ -1712,10 +2674,49 @@ module.exports = class LocalStartPagePlugin extends Plugin {
                 : item.path.split("/").pop().replace(/\.md$/, ""),
           path: item.path,
         };
-      });
+      }).filter((item) => !this.settings.removedBookmarks.includes(item.path));
     } catch (error) {
       console.error("Local Start Page: failed to read bookmarks", error);
       return [];
+    }
+  }
+
+  async addGlobalBookmark(path) {
+    if (typeof path !== "string" || !path.trim()) return;
+    const normalizedPath = path.trim();
+    const bookmarkPath = `${this.app.vault.configDir}/bookmarks.json`;
+    let parsed = { items: [] };
+    if (await this.app.vault.adapter.exists(bookmarkPath)) {
+      try {
+        parsed = JSON.parse(await this.app.vault.adapter.read(bookmarkPath));
+        if (!Array.isArray(parsed.items)) parsed.items = [];
+      } catch (e) {
+        parsed = { items: [] };
+      }
+    }
+    // avoid duplicates
+    if (parsed.items.some((it) => it && it.type === "file" && it.path === normalizedPath)) {
+      return;
+    }
+    const file = this.app.vault.getAbstractFileByPath(normalizedPath);
+    const title = file instanceof TFile ? file.basename : normalizedPath.split("/").pop().replace(/\.md$/, "");
+    parsed.items.unshift({ type: "file", ctime: Date.now(), path: normalizedPath, title });
+    await this.app.vault.adapter.write(bookmarkPath, JSON.stringify(parsed, null, 2));
+    new Notice("Bookmarked.");
+  }
+
+  async removeGlobalBookmark(path) {
+    if (typeof path !== "string" || !path.trim()) return;
+    const normalizedPath = path.trim();
+    const bookmarkPath = `${this.app.vault.configDir}/bookmarks.json`;
+    if (!(await this.app.vault.adapter.exists(bookmarkPath))) return;
+    try {
+      const parsed = JSON.parse(await this.app.vault.adapter.read(bookmarkPath));
+      if (!Array.isArray(parsed.items)) return;
+      parsed.items = parsed.items.filter((it) => !(it && it.type === "file" && it.path === normalizedPath));
+      await this.app.vault.adapter.write(bookmarkPath, JSON.stringify(parsed, null, 2));
+    } catch (e) {
+      console.error("Local Start Page: failed to remove bookmark", e);
     }
   }
 
@@ -1737,6 +2738,18 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     }
 
     return counts;
+  }
+
+  getAvailableNoteFolders() {
+    const folders = this.app.vault
+      .getAllLoadedFiles()
+      .filter((entry) => entry instanceof TFolder)
+      .filter((folder) => !folder.path || this.isSearchablePath(folder.path));
+
+    return folders.map((folder) => ({
+      title: folder.path === "" ? this.getVaultRootLabel() : folder.name,
+      path: folder.path,
+    }));
   }
 
   getRecentFolderItems(limit = 4) {
@@ -1795,7 +2808,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       path: file.path,
       meta: file.path,
       badge: formatTimeAgo(file.modified),
-      onClick: () => this.openFile(file.path),
+      onClick: () => this.openFileNew(file.path),
       pinPath: file.path,
     }));
   }
@@ -1949,7 +2962,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
         path: file.path,
         meta: file.path,
         badge: "Pinned",
-        onClick: () => this.openFile(file.path),
+        onClick: () => this.openFileNew(file.path),
         pinPath: file.path,
       };
     });
@@ -1982,5 +2995,403 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     }
 
     await this.saveSettings();
+  }
+
+  async removeBookmarkHint(path) {
+    if (typeof path !== "string" || !path.trim()) {
+      return;
+    }
+    const normalizedPath = path.trim();
+    if (!this.settings.removedBookmarks.includes(normalizedPath)) {
+      this.settings.removedBookmarks = [...this.settings.removedBookmarks, normalizedPath];
+      await this.saveSettings();
+    }
+    // also remove from the global Obsidian bookmarks so it is truly gone
+    await this.removeGlobalBookmark(normalizedPath);
+  }
+
+  getRecentItems(includeTempNotes = true) {
+    const filesByPath = new Map(this.getAllFiles().map((file) => [file.path, file]));
+    const tempFolder = this.settings.tempFolder || TEMPORARY_FOLDER;
+
+    const recentFiles = this.settings.recentHistory
+      .map((path) => filesByPath.get(path))
+      .filter(Boolean)
+      .filter((file) => {
+        if (includeTempNotes) return true;
+        // Exclude temp notes if setting is disabled
+        return !file.path.startsWith(`${tempFolder}/`);
+      })
+      .slice(0, this.settings.maxRecent);
+
+    const fallback = recentFiles.length
+      ? recentFiles
+      : this.getAllFiles()
+          .filter((file) => {
+            if (includeTempNotes) return true;
+            return !file.path.startsWith(`${tempFolder}/`);
+          })
+          .sort((left, right) => right.modified - left.modified)
+          .slice(0, this.settings.maxRecent);
+
+    return fallback.map((file) => ({
+      title: file.name,
+      path: file.path,
+      meta: file.path,
+      badge: formatTimeAgo(file.modified),
+      onClick: () => this.openFileNew(file.path),
+      pinPath: file.path,
+    }));
+  }
+
+  getTaskItems(limit = 10, filterQuery = "") {
+    try {
+      // Access the Tasks plugin API
+      const tasksPlugin = this.app.plugins?.plugins?.["obsidian-tasks-plugin"];
+      if (!tasksPlugin || typeof tasksPlugin.getTasks !== "function") {
+        return [{
+          title: "Tasks plugin not installed",
+          path: "",
+          meta: "Install the Tasks community plugin to see tasks here",
+          badge: "Missing",
+          missing: true,
+        }];
+      }
+
+      const allTasks = tasksPlugin.getTasks();
+      if (!Array.isArray(allTasks) || !allTasks.length) {
+        return [{
+          title: "No tasks found",
+          path: "",
+          meta: "Create tasks in your notes using the Tasks plugin syntax",
+          badge: "Empty",
+          missing: true,
+        }];
+      }
+
+      // Filter incomplete tasks
+      let tasks = allTasks.filter((task) => !task.isDone);
+
+      // Apply filter query if provided (basic filtering)
+      if (filterQuery && typeof filterQuery === "string" && filterQuery.trim()) {
+        const query = filterQuery.trim().toLowerCase();
+        // Simple tag filtering support
+        if (query.startsWith("#")) {
+          const tag = query.slice(1);
+          tasks = tasks.filter((task) => task.tags?.some((t) => t.toLowerCase().includes(tag)));
+        }
+        // Basic text search in description
+        else {
+          tasks = tasks.filter((task) => task.description?.toLowerCase().includes(query));
+        }
+      }
+
+      // Sort by priority (high first), then due date, then scheduled date
+      tasks.sort((a, b) => {
+        const priorityOrder = { high: 3, medium: 2, low: 1, none: 0 };
+        const aPriority = priorityOrder[a.priority] || 0;
+        const bPriority = priorityOrder[b.priority] || 0;
+        if (bPriority !== aPriority) return bPriority - aPriority;
+
+        // Due date sorting (earlier first)
+        if (a.dueDate && b.dueDate) {
+          return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
+        }
+        if (a.dueDate) return -1;
+        if (b.dueDate) return 1;
+
+        // Scheduled date
+        if (a.scheduledDate && b.scheduledDate) {
+          return new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime();
+        }
+        if (a.scheduledDate) return -1;
+        if (b.scheduledDate) return 1;
+
+        return 0;
+      });
+
+      const limitedTasks = tasks.slice(0, limit);
+
+      return limitedTasks.map((task) => {
+        const filePath = task.taskLocation?.path;
+        const lineNumber = task.taskLocation?._lineNumber;
+        const dueText = task.dueDate ? `📅 ${new Date(task.dueDate).toLocaleDateString()}` : "";
+        const priorityIcon = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : task.priority === "low" ? "🟢" : "";
+        const statusIcon = task.isDone ? "✅" : "☐";
+
+        return {
+          title: `${statusIcon} ${task.description}${priorityIcon ? ` ${priorityIcon}` : ""}`,
+          path: filePath,
+          meta: filePath ? `${filePath}${lineNumber ? `:${lineNumber}` : ""}${dueText ? ` • ${dueText}` : ""}` : "No file path",
+          badge: dueText || task.scheduledDate ? `📅 ${new Date(task.dueDate || task.scheduledDate).toLocaleDateString()}` : task.priority ? `Priority: ${task.priority}` : "No due date",
+          missing: !filePath,
+          onClick: filePath ? () => {
+            this.openFileNew(filePath);
+            // Optionally scroll to line number
+            if (lineNumber) {
+              setTimeout(() => {
+                const leaf = this.app.workspace.getMostRecentLeaf();
+                if (leaf?.view?.editor) {
+                  leaf.view.editor.setCursor(lineNumber - 1, 0);
+                }
+              }, 100);
+            }
+          } : undefined,
+          // Task-specific actions
+          taskActions: filePath ? [
+            {
+              icon: task.isDone ? "rotate-ccw" : "check",
+              label: task.isDone ? "Mark as incomplete" : "Mark as complete",
+              onClick: async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                await this.toggleTaskDone(task);
+              },
+            },
+            {
+              icon: "file-text",
+              label: "Open in new tab",
+              onClick: (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const leaf = this.app.workspace.getLeaf(true);
+                this.openFile(filePath, leaf);
+              },
+            },
+            {
+              icon: "copy",
+              label: "Copy task text",
+              onClick: (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                navigator.clipboard.writeText(task.description);
+                new Notice("Task text copied");
+              },
+            },
+          ] : [],
+          task: task, // Store original task for potential future actions
+        };
+      });
+    } catch (error) {
+      console.error("Local Home Page: failed to fetch tasks", error);
+      return [{
+        title: "Error loading tasks",
+        path: "",
+        meta: error.message || "Unknown error",
+        badge: "Error",
+        missing: true,
+      }];
+    }
+  }
+
+  // Local, self-contained task list (no external plugin required)
+  genTaskId() {
+    return `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async addTask(text) {
+    const clean = typeof text === "string" ? text.trim() : "";
+    if (!clean) return;
+    this.settings.tasks = [
+      ...this.settings.tasks,
+      { id: this.genTaskId(), text: clean, done: false, created: Date.now() },
+    ];
+    await this.saveSettings();
+    new Notice("Task added");
+  }
+
+  async removeTask(id) {
+    this.settings.tasks = this.settings.tasks.filter((t) => t.id !== id);
+    await this.saveSettings();
+  }
+
+  async toggleLocalTask(id) {
+    this.settings.tasks = this.settings.tasks.map((t) =>
+      t.id === id ? { ...t, done: !t.done } : t
+    );
+    await this.saveSettings();
+  }
+
+  async reorderTasks(orderedIds) {
+    if (!Array.isArray(orderedIds)) return;
+    const byId = new Map(this.settings.tasks.map((t) => [t.id, t]));
+    const reordered = orderedIds.map((id) => byId.get(id)).filter(Boolean);
+    // keep any tasks not present in orderedIds (safety)
+    for (const t of this.settings.tasks) {
+      if (!orderedIds.includes(t.id)) reordered.push(t);
+    }
+    this.settings.tasks = reordered;
+    await this.saveSettings();
+  }
+
+  async toggleTaskDone(task) {
+    try {
+      const tasksPlugin = this.app.plugins?.plugins?.["obsidian-tasks-plugin"];
+      if (!tasksPlugin || typeof tasksPlugin.executeToggleTaskDoneCommand !== "function") {
+        new Notice("Tasks plugin doesn't support toggling via API");
+        return;
+      }
+
+      // Get the original markdown line for the task
+      const originalLine = task.originalMarkdown || task.description;
+      const filePath = task.taskLocation?.path;
+
+      if (!filePath) {
+        new Notice("Cannot find task file");
+        return;
+      }
+
+      // Toggle the task
+      const newLine = tasksPlugin.executeToggleTaskDoneCommand(originalLine, filePath);
+
+      // Read the file and replace the line
+      const file = this.app.vault.getAbstractFileByPath(filePath);
+      if (file instanceof TFile) {
+        const content = await this.app.vault.read(file);
+        const lines = content.split("\n");
+        const lineIndex = lines.findIndex(l => l.trim() === originalLine.trim()) || (task.taskLocation?._lineNumber ? task.taskLocation._lineNumber - 1 : -1);
+
+        if (lineIndex >= 0) {
+          lines[lineIndex] = newLine;
+          await this.app.vault.modify(file, lines.join("\n"));
+          new Notice(task.isDone ? "Task marked incomplete" : "Task completed");
+          this.renderPanel(); // Refresh the tasks list
+        } else {
+          new Notice("Could not locate task in file");
+        }
+      }
+    } catch (error) {
+      console.error("Failed to toggle task:", error);
+      new Notice("Failed to toggle task");
+    }
+  }
+
+  getGreetingText() {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 17) return "Good afternoon";
+    return "Good evening";
+  }
+
+  showCompactHomeMenu(evt) {
+    const { Menu, setIcon } = require("obsidian");
+    const menu = new Menu();
+
+    // Search action
+    menu.addItem((item) => {
+      item
+        .setTitle("Search vault")
+        .setIcon("search")
+        .onClick(() => {
+          this.activateView({ replaceCurrent: false }).then(() => {
+            const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_START_PAGE)[0];
+            if (leaf && leaf.view instanceof LocalStartPageView) {
+              leaf.view.focusSearch();
+            }
+          });
+        });
+    });
+
+    menu.addSeparator();
+
+    // Recent notes
+    const recentItems = this.getRecentItems(this.settings.showTempNotes !== false).slice(0, 8);
+    if (recentItems.length) {
+      menu.addItem((item) => {
+        item.setTitle("Recent notes").setIcon("clock").setDisabled(true);
+      });
+      for (const note of recentItems) {
+        menu.addItem((item) => {
+          item
+            .setTitle(note.title)
+            .setIcon("file-text")
+            .onClick(() => this.openFile(note.path));
+        });
+      }
+    } else {
+      menu.addItem((item) => {
+        item.setTitle("No recent notes").setDisabled(true);
+      });
+    }
+
+    menu.addSeparator();
+
+    // Pinned notes
+    const pinnedItems = this.getPinnedItems().slice(0, 6);
+    if (pinnedItems.length) {
+      menu.addItem((item) => {
+        item.setTitle("Pinned notes").setIcon("pin").setDisabled(true);
+      });
+      for (const note of pinnedItems) {
+        if (!note.missing) {
+          menu.addItem((item) => {
+            item
+              .setTitle(note.title)
+              .setIcon("pin")
+              .onClick(() => this.openFile(note.path));
+          });
+        }
+      }
+    }
+
+    menu.addSeparator();
+
+    // Tasks (if enabled)
+    if (this.settings.showTasks !== false) {
+      const taskItems = this.getTaskItems(5, this.settings.tasksFilterQuery);
+      if (taskItems.length && !taskItems[0].missing) {
+        menu.addItem((item) => {
+          item.setTitle("Tasks").setIcon("check-square").setDisabled(true);
+        });
+        for (const task of taskItems) {
+          menu.addItem((item) => {
+            item
+              .setTitle(task.title)
+              .setIcon("check-square")
+              .onClick(() => {
+                if (task.path) this.openFile(task.path);
+              });
+          });
+        }
+        menu.addSeparator();
+      }
+    }
+
+    // Quick actions
+    menu.addItem((item) => {
+      item
+        .setTitle("Create temporary note")
+        .setIcon("plus")
+        .onClick(() => this.createTemporaryNote(this.app.workspace.getLeaf(true)));
+    });
+
+    menu.addItem((item) => {
+      item
+        .setTitle("Open last closed note")
+        .setIcon("rotate-ccw")
+        .setDisabled(!this.getLastClosedNote())
+        .onClick(() => this.openLastClosedNote());
+    });
+
+    menu.addItem((item) => {
+      item
+        .setTitle("Open full home view")
+        .setIcon("window")
+        .onClick(() => this.activateView({ replaceCurrent: false }));
+    });
+
+    menu.addSeparator();
+
+    menu.addItem((item) => {
+      item
+        .setTitle("Settings")
+        .setIcon("settings")
+        .onClick(() => {
+          this.app.setting.open();
+          this.app.setting.openTabById("simple-home");
+        });
+    });
+
+    menu.showAtMouseEvent(evt);
   }
 };

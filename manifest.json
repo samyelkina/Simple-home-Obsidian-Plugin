@@ -1,9 +1,9 @@
 {
   "id": "simple-home",
   "name": "Simple Home Page",
-  "version": "1.0.0",
-  "minAppVersion": "1.4.0",
-  "description": "Open a simple home page with file-name search, recent notes, deleted-note restore, and vault navigation.",
+  "version": "2.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Open a simple home page with file-name search, recent notes, deleted-note restore, vault navigation, tasks integration, and customizable display sections.",
   "author": "Samy Elkinani",
   "isDesktopOnly": false
 }
