@@ -311,6 +311,24 @@ class LocalStartPageView extends ItemView {
 
   async onOpen() {
     this.render({ focusSearch: true });
+    this.registerDomEvent(this.contentEl, "keydown", (event) => {
+      if (event.key === "Escape" && this.selectedItems.size > 0) {
+        this.clearSelection();
+      }
+    });
+    // Relative times ("5m ago") go stale while the tab sits in the background;
+    // refresh when the tab is visible again and on a slow timer.
+    this.registerInterval(
+      window.setInterval(() => {
+        if (this.containerEl.isShown() && this.isStale(60 * 1000) && !this.query && this.selectedItems.size === 0 && document.activeElement !== this.inputEl) {
+          this.plugin.refreshViews({ preserveScroll: true });
+        }
+      }, 60 * 1000)
+    );
+  }
+
+  isStale(maxAgeMs = 30 * 1000) {
+    return !this.renderedAt || Date.now() - this.renderedAt > maxAgeMs;
   }
 
   async onClose() {
@@ -328,6 +346,9 @@ class LocalStartPageView extends ItemView {
   render(options = {}) {
     const { preserveScroll = false, focusSearch = false } = options;
     const { contentEl } = this;
+    this.renderedAt = Date.now();
+    this.selectedItems.clear();
+    this.lastSelectedIndex = -1;
     const previousScrollTop = preserveScroll ? contentEl.scrollTop : 0;
     contentEl.empty();
     contentEl.addClass("local-start-page");
@@ -366,8 +387,14 @@ class LocalStartPageView extends ItemView {
       this.inputEl.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          const sel = this.selectedItems && this.selectedItems.values ? this.selectedItems.values().next().value : null;
-          if (sel && sel.path) { this.openFileNew(sel.path); this.resetSearch(); }
+          const entry = this.currentSuggestions[this.selectedSuggestionIndex] || this.currentSuggestions[0];
+          if (entry) { this.activateSearchEntry(entry); }
+        } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && this.currentSuggestions.length) {
+          e.preventDefault();
+          const step = e.key === "ArrowDown" ? 1 : -1;
+          const count = this.currentSuggestions.length;
+          this.selectedSuggestionIndex = (this.selectedSuggestionIndex + step + count) % count;
+          this.renderSuggestions();
         } else if (e.key === "Escape") {
           if (this.query) { this.resetSearch(); } else { this.inputEl.blur(); }
         }
@@ -1214,10 +1241,23 @@ class LocalStartPageView extends ItemView {
     );
   }
 
+  // Reflect the current multi-selection on the page (highlight + floating toolbar)
+  // without rebuilding the homepage.
+  updateSelectionUI() {
+    for (const el of Array.from(this.contentEl.querySelectorAll("[data-file-path], [data-item-path]"))) {
+      const path = el.getAttribute("data-file-path") || el.getAttribute("data-item-path");
+      el.toggleClass("is-selected", this.selectedItems.has(path));
+    }
+    const existing = this.contentEl.querySelector(".local-start-page__bulk-toolbar--floating");
+    if (existing) existing.remove();
+    if (this.selectedItems.size > 0) {
+      this.renderBulkActionsToolbar(this.contentEl, "local-start-page__bulk-toolbar--floating");
+    }
+  }
+
   renderPanel() {
-    console.log("Local Start Page: renderPanel start", this.activeTab);
     if (!this.panelEl || !this.statusEl) {
-      console.log("Local Start Page: renderPanel skipped - missing panelEl/statusEl");
+      this.updateSelectionUI();
       return;
     }
 
@@ -1281,7 +1321,7 @@ class LocalStartPageView extends ItemView {
           ...item,
           actions: item.path && !item.missing ? this.createNoteActions(item.path) : [],
         })),
-        "Add pinned notes in Local Home Page settings."
+        "Add pinned notes in Simple Home Page settings."
       );
       return;
     }
@@ -1311,8 +1351,8 @@ class LocalStartPageView extends ItemView {
     );
   }
 
-  renderBulkActionsToolbar() {
-    const toolbar = this.panelEl.createDiv({ cls: "local-start-page__bulk-toolbar" });
+  renderBulkActionsToolbar(container = this.panelEl, extraClass = "") {
+    const toolbar = container.createDiv({ cls: `local-start-page__bulk-toolbar ${extraClass}`.trim() });
     const count = toolbar.createEl("span", {
       cls: "local-start-page__bulk-count",
       text: `${this.selectedItems.size} item${this.selectedItems.size === 1 ? "" : "s"} selected`,
@@ -1499,10 +1539,9 @@ class LocalStartPageView extends ItemView {
       // Cmd/Ctrl+Click: Don't change selection, handled by click handler for opening in new window
       return;
     } else {
-      // Single click (no modifier): Clear selection, select this item
+      // Plain click opens the note; it just drops any multi-selection.
       this.selectedItems.clear();
-      this.selectedItems.add(path);
-      this.lastSelectedIndex = index;
+      this.lastSelectedIndex = -1;
     }
     this.renderPanel();
   }
@@ -1541,6 +1580,9 @@ class LocalStartPageView extends ItemView {
       const isInteractive = typeof item.onClick === "function" && !item.missing;
       const isSelected = this.selectedItems.has(item.path);
       card.setAttr("role", isInteractive ? "button" : "note");
+      if (item.path) {
+        card.setAttr("data-item-path", item.path);
+      }
 
       if (isSelected) {
         card.addClass("is-selected");
@@ -2104,11 +2146,34 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     );
 
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => {
+      this.app.workspace.on("active-leaf-change", (leaf) => {
         this.syncClosedNoteState();
         this.maybeRestoreHomeView();
         this.tagHomeTabs();
+        // Bring a stale homepage up to date the moment the user returns to it,
+        // instead of rebuilding it while they work in another note.
+        if (leaf && leaf.view instanceof LocalStartPageView && (this.homeViewDirty || leaf.view.isStale())) {
+          this.refreshViews({ preserveScroll: true });
+        }
       })
+    );
+
+    // Record every note the user opens, wherever it was opened from (file
+    // explorer, quick switcher, links), so Recent never misses a note.
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => {
+        if (file instanceof TFile && file.extension === "md" && !this.isManagedTrashPath(file.path)) {
+          this.recordRecent(file.path);
+        }
+      })
+    );
+
+    // Keep stored paths valid when notes are renamed or deleted elsewhere.
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => this.handlePathChange(oldPath, file.path))
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => this.handlePathChange(file.path, null))
     );
 
     // NOTE: The vault event listeners that previously called refreshViews() on
@@ -2183,12 +2248,17 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     this.settings.focusMode = loaded.focusMode ?? DEFAULT_SETTINGS.focusMode;
   }
 
-  async saveSettings() {
+  async saveSettings(options = {}) {
     await this.saveData(this.settings);
+    if (options.refresh === false) {
+      this.homeViewDirty = true;
+      return;
+    }
     this.refreshViews({ preserveScroll: true });
   }
 
   refreshViews(options = { preserveScroll: true }) {
+    this.homeViewDirty = false;
     this.app.workspace.getLeavesOfType(VIEW_TYPE_START_PAGE).forEach((leaf) => {
       if (leaf.view instanceof LocalStartPageView) {
         leaf.view.render(options);
@@ -2282,6 +2352,40 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     this.openMarkdownPaths = nextPaths;
   }
 
+  // Move a path to the front of recent history without rebuilding the homepage.
+  recordRecent(path) {
+    if (this.settings.recentHistory[0] === path) {
+      return;
+    }
+    this.settings.recentHistory = [path, ...this.settings.recentHistory.filter((p) => p !== path)].slice(0, HISTORY_LIMIT);
+    this.saveSettings({ refresh: false });
+  }
+
+  // Rewrite (or drop, when newPath is null) stored references to a moved/deleted path.
+  handlePathChange(oldPath, newPath) {
+    if (this.isManagedTrashPath(oldPath) || (newPath && this.isManagedTrashPath(newPath))) {
+      return;
+    }
+    const matches = (p) => p === oldPath || p.startsWith(`${oldPath}/`);
+    const remap = (p) => (newPath ? newPath + p.slice(oldPath.length) : null);
+    let changed = false;
+
+    const nextHistory = [];
+    for (const p of this.settings.recentHistory) {
+      if (matches(p)) {
+        changed = true;
+        const mapped = remap(p);
+        if (mapped && !nextHistory.includes(mapped)) nextHistory.push(mapped);
+      } else if (!nextHistory.includes(p)) {
+        nextHistory.push(p);
+      }
+    }
+    if (changed) {
+      this.settings.recentHistory = nextHistory;
+      this.saveSettings({ refresh: false });
+    }
+  }
+
   openFile(path, sourceLeaf) {
     const target = this.app.vault.getAbstractFileByPath(path);
     if (!(target instanceof TFile)) {
@@ -2291,8 +2395,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
 
     // Track the opened note in recent history so "Recently viewed" reflects opens,
     // not just creations and closes. Does not rebuild the homepage.
-    this.settings.recentHistory = [target.path, ...this.settings.recentHistory.filter((p) => p !== target.path)].slice(0, HISTORY_LIMIT);
-    this.saveSettings();
+    this.recordRecent(target.path);
 
     // Never replace the Home view itself: if no explicit leaf was given, or the
     // resolved leaf is the Home leaf, open in a brand-new leaf instead.
@@ -2527,7 +2630,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       await this.saveSettings();
       new Notice("Note moved to local trash.");
     } catch (error) {
-      console.error("Local Home: failed to move note to trash", error);
+      console.error("Simple Home: failed to move note to trash", error);
       new Notice("Could not move that note to trash.");
     }
   }
@@ -2568,13 +2671,38 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       .filter(Boolean);
   }
 
+  // Remove now-empty folders left behind under the bin after a restore/delete.
+  async cleanupEmptyTrashFolders(startPath) {
+    let folderPath = startPath;
+    while (folderPath && folderPath !== LOCAL_TRASH_FOLDER && this.isManagedTrashPath(folderPath)) {
+      const folder = this.app.vault.getAbstractFileByPath(folderPath);
+      if (!(folder instanceof TFolder) || folder.children.length) {
+        return;
+      }
+      try {
+        await this.app.vault.delete(folder, true);
+      } catch (e) {
+        return;
+      }
+      folderPath = getParentFolderPath(folderPath);
+    }
+  }
+
   async clearBin() {
     const items = [...this.settings.deletedItems];
     if (!items.length) return;
     for (const item of items) {
       const target = this.app.vault.getAbstractFileByPath(item.trashPath);
       if (target instanceof TFile) {
-        try { await this.app.vault.delete(target); } catch (e) { /* ignore individual failures */ }
+        try { await this.app.vault.delete(target, true); } catch (e) { /* ignore individual failures */ }
+      }
+    }
+    const root = this.app.vault.getAbstractFileByPath(LOCAL_TRASH_FOLDER);
+    if (root instanceof TFolder) {
+      for (const child of [...root.children]) {
+        if (child instanceof TFolder) {
+          await this.cleanupEmptyTrashFolders(child.path);
+        }
       }
     }
     this.settings.deletedItems = [];
@@ -2602,10 +2730,11 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       const restorePath = await this.getAvailablePath(deletedItem.originalPath);
       await this.app.fileManager.renameFile(target, restorePath);
       this.settings.deletedItems = this.settings.deletedItems.filter((item) => item.trashPath !== trashPath);
+      await this.cleanupEmptyTrashFolders(getParentFolderPath(trashPath));
       await this.saveSettings();
-      new Notice("Note restored.");
+      new Notice(restorePath === deletedItem.originalPath ? "Note restored." : `Note restored as ${restorePath}`);
     } catch (error) {
-      console.error("Local Home: failed to restore note", error);
+      console.error("Simple Home: failed to restore note", error);
       new Notice("Could not restore that note.");
     }
   }
@@ -2618,10 +2747,11 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       }
 
       this.settings.deletedItems = this.settings.deletedItems.filter((item) => item.trashPath !== trashPath);
+      await this.cleanupEmptyTrashFolders(getParentFolderPath(trashPath));
       await this.saveSettings();
       new Notice("Note deleted permanently.");
     } catch (error) {
-      console.error("Local Home: failed to delete note permanently", error);
+      console.error("Simple Home: failed to delete note permanently", error);
       new Notice("Could not delete that note permanently.");
     }
   }
@@ -2681,7 +2811,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
         };
       }).filter((item) => !this.settings.removedBookmarks.includes(item.path));
     } catch (error) {
-      console.error("Local Start Page: failed to read bookmarks", error);
+      console.error("Simple Home: failed to read bookmarks", error);
       return [];
     }
   }
@@ -2721,7 +2851,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       parsed.items = parsed.items.filter((it) => !(it && it.type === "file" && it.path === normalizedPath));
       await this.app.vault.adapter.write(bookmarkPath, JSON.stringify(parsed, null, 2));
     } catch (e) {
-      console.error("Local Start Page: failed to remove bookmark", e);
+      console.error("Simple Home: failed to remove bookmark", e);
     }
   }
 
@@ -2793,29 +2923,6 @@ module.exports = class LocalStartPagePlugin extends Plugin {
         noteCount: noteCounts.get(path) || 0,
       };
     });
-  }
-
-  getRecentItems() {
-    const filesByPath = new Map(this.getAllFiles().map((file) => [file.path, file]));
-    const recentFiles = this.settings.recentHistory
-      .map((path) => filesByPath.get(path))
-      .filter(Boolean)
-      .slice(0, this.settings.maxRecent);
-
-    const fallback = recentFiles.length
-      ? recentFiles
-      : this.getAllFiles()
-          .sort((left, right) => right.modified - left.modified)
-          .slice(0, this.settings.maxRecent);
-
-    return fallback.map((file) => ({
-      title: file.name,
-      path: file.path,
-      meta: file.path,
-      badge: formatTimeAgo(file.modified),
-      onClick: () => this.openFileNew(file.path),
-      pinPath: file.path,
-    }));
   }
 
   searchVaultEntries(query, limit = Number.POSITIVE_INFINITY) {
@@ -3178,7 +3285,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
         };
       });
     } catch (error) {
-      console.error("Local Home Page: failed to fetch tasks", error);
+      console.error("Simple Home Page: failed to fetch tasks", error);
       return [{
         title: "Error loading tasks",
         path: "",
@@ -3254,13 +3361,16 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       if (file instanceof TFile) {
         const content = await this.app.vault.read(file);
         const lines = content.split("\n");
-        const lineIndex = lines.findIndex(l => l.trim() === originalLine.trim()) || (task.taskLocation?._lineNumber ? task.taskLocation._lineNumber - 1 : -1);
+        let lineIndex = lines.findIndex(l => l.trim() === originalLine.trim());
+        if (lineIndex < 0 && task.taskLocation?._lineNumber) {
+          lineIndex = task.taskLocation._lineNumber - 1;
+        }
 
         if (lineIndex >= 0) {
           lines[lineIndex] = newLine;
           await this.app.vault.modify(file, lines.join("\n"));
           new Notice(task.isDone ? "Task marked incomplete" : "Task completed");
-          this.renderPanel(); // Refresh the tasks list
+          this.refreshViews({ preserveScroll: true }); // Refresh the tasks list
         } else {
           new Notice("Could not locate task in file");
         }

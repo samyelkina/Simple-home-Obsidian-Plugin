@@ -208,16 +208,16 @@
   background: var(--background-primary);
 }
 
-.local-start-page__search-wrap .search-input-container:focus-within {
-  border-color: var(--background-modifier-border-hover) !important;
-  outline: none !important;
-  box-shadow: 0 0 0 2px var(--background-modifier-border-hover) !important;
+.local-start-page .local-start-page__search-wrap .search-input-container:focus-within {
+  border-color: var(--background-modifier-border-hover);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background-modifier-border-hover);
 }
 
-.local-start-page__search-wrap input:focus {
-  outline: none !important;
-  border: none !important;
-  box-shadow: none !important;
+.local-start-page .local-start-page__search-wrap .search-input-container input:focus {
+  outline: none;
+  border: none;
+  box-shadow: none;
 }
 
 .local-start-page__search-wrap input {
@@ -1797,12 +1797,103 @@
 }
 
 /* ---- Only the Home tab: shorter left-to-right (width), everything else untouched ---- */
-.local-start-page__home-tab {
-  flex: 0 0 auto !important;
-  max-width: 112px !important;
+.workspace-tab-header.local-start-page__home-tab {
+  flex: 0 0 auto;
+  max-width: 112px;
 }
 .local-start-page__home-tab .workspace-tab-header-inner-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+
+/* ---- Centred search bar and text ---- */
+.local-start-page__search {
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+.local-start-page__search-wrap {
+  margin: 0 auto;
+}
+.local-start-page__search-wrap .search-input-container {
+  justify-content: center;
+}
+.local-start-page__search-wrap input,
+.local-start-page__search-wrap input::placeholder {
+  text-align: center;
+}
+.local-start-page__search-wrap .search-input-container input {
+  padding-left: 32px;
+  padding-right: 32px;
+}
+.local-start-page__suggestions {
+  max-width: 640px;
+  margin-left: auto;
+  margin-right: auto;
+  width: 100%;
+}
+
+/* Compact search bar */
+.local-start-page__search {
+  max-width: 460px;
+}
+.local-start-page__search-wrap .search-input-container {
+  min-height: 42px;
+}
+.local-start-page__search-wrap input {
+  height: 40px;
+  font-size: 0.95rem;
+}
+.local-start-page__suggestions {
+  max-width: 460px;
+}
+
+/* Smaller search bar, icon scaled to the bar height */
+.local-start-page__search,
+.local-start-page__suggestions {
+  max-width: 360px;
+}
+.local-start-page__search-wrap .search-input-container {
+  --lsp-search-height: 34px;
+  position: relative;
+  min-height: var(--lsp-search-height);
+  height: var(--lsp-search-height);
+}
+.local-start-page__search-wrap .search-input-container::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: calc(var(--lsp-search-height) * 0.5);
+  height: calc(var(--lsp-search-height) * 0.5);
+  transform: translateY(-50%);
+  mask-size: contain;
+  -webkit-mask-size: contain;
+}
+.local-start-page__search-wrap input {
+  height: 100%;
+  font-size: 0.9rem;
+  padding-left: 34px;
+  padding-right: 34px;
+}
+.local-start-page__search-wrap .search-input-clear-button {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+
+/* Floating bulk-actions toolbar (multi-select via Shift+click) */
+.local-start-page__bulk-toolbar--floating {
+  position: sticky;
+  bottom: 16px;
+  z-index: 5;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.local-start-page__item.is-selected,
+.local-start-page__tree-file.is-selected {
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
 }

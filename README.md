@@ -6,7 +6,7 @@ Obsidian Plugin View: https://community.obsidian.md/plugins/simple-home
 ## Features
 
 - File-name search for notes and folders
-- Recent notes, pinned notes, and deleted notes tabs
+- Recent notes, pinned notes, and a Bin section for deleted notes
 - Local trash with restore and permanent delete actions
 - Recent folders and a simplified vault tree for navigation
 - Open last closed note and reopen recently closed notes
@@ -30,7 +30,7 @@ Install `Simple Home Page` from Obsidian's Community Plugins browser once it is 
 
 - Use the Home button or the `Simple Home Page: Open home` command to open the view.
 - Search matches note and folder names, not file contents.
-- The `Deleted` tab lets you restore notes moved to the plugin's local bin or remove them permanently.
+- The Bin section lets you restore notes moved to the plugin's local bin or remove them permanently.
 - The `Open last closed note` button reopens the most recent closed note.
 - `Cmd` on macOS or `Ctrl` on Windows/Linux while clicking `Open last closed note` opens recently closed notes in new tabs.
 - The `Create temporary note` button creates a new note in the temporary folder.
@@ -41,7 +41,7 @@ Install `Simple Home Page` from Obsidian's Community Plugins browser once it is 
 You can assign hotkeys to these commands in `Settings -> Hotkeys`:
 
 - `Simple Home Page: Open home`
-- `Simple Home Page: Open home in left sidebar`
+- `Simple Home Page: Open home as dashboard note`
 - `Simple Home Page: Open last closed note`
 - `Simple Home Page: Open recently closed notes`
 - `Simple Home Page: Create temporary note`
@@ -49,4 +49,4 @@ You can assign hotkeys to these commands in `Settings -> Hotkeys`:
 
 ## Local Bin
 
-When you delete a note from Home, the plugin moves it into a local bin at `bin/local-home-page/` instead of deleting it immediately. You can restore it later from the `Deleted` tab or remove it permanently.
+When you delete a note from Home, the plugin moves it into a local bin at `bin/local-home-page/` instead of deleting it immediately. You can restore it later from the Bin section on Home or remove it permanently.
