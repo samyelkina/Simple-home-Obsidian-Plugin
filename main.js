@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS = {
   pinnedItems: [],
   deletedItems: [],
   recentHistory: [],
+  hiddenRecent: [],
   removedBookmarks: [],
   folderHistory: [],
   // Display section toggles
@@ -711,11 +712,7 @@ class LocalStartPageView extends ItemView {
   }
 
   async removeFromRecentHistory(path) {
-    if (typeof path !== "string" || !path.trim()) return;
-    const normalizedPath = path.trim();
-    this.settings.recentHistory = this.settings.recentHistory.filter((p) => p !== normalizedPath);
-    await this.saveData(this.settings);
-    this.refreshViews();
+    await this.plugin.removeFromRecentHistory(path);
   }
 
   renderFileTree(container) {
@@ -2206,6 +2203,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
       pinnedItems: normalizePinnedItems(loaded.pinnedItems || DEFAULT_SETTINGS.pinnedItems),
       deletedItems: normalizeDeletedItems(loaded.deletedItems || DEFAULT_SETTINGS.deletedItems),
       recentHistory: normalizeStringHistory(loaded.recentHistory),
+      hiddenRecent: normalizeStringHistory(loaded.hiddenRecent),
       removedBookmarks: normalizeStringHistory(loaded.removedBookmarks),
       folderHistory: normalizeStringHistory(loaded.folderHistory),
       // Ensure boolean defaults for new settings
@@ -2354,7 +2352,9 @@ module.exports = class LocalStartPagePlugin extends Plugin {
 
   // Move a path to the front of recent history without rebuilding the homepage.
   recordRecent(path) {
-    if (this.settings.recentHistory[0] === path) {
+    if ((this.settings.hiddenRecent || []).includes(path)) {
+      this.settings.hiddenRecent = this.settings.hiddenRecent.filter((p) => p !== path);
+    } else if (this.settings.recentHistory[0] === path) {
       return;
     }
     this.settings.recentHistory = [path, ...this.settings.recentHistory.filter((p) => p !== path)].slice(0, HISTORY_LIMIT);
@@ -3122,8 +3122,19 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     await this.removeGlobalBookmark(normalizedPath);
   }
 
+  async removeFromRecentHistory(path) {
+    if (typeof path !== "string" || !path.trim()) return;
+    const normalizedPath = path.trim();
+    this.settings.recentHistory = this.settings.recentHistory.filter((p) => p !== normalizedPath);
+    if (!this.settings.hiddenRecent.includes(normalizedPath)) {
+      this.settings.hiddenRecent = [...this.settings.hiddenRecent, normalizedPath];
+    }
+    await this.saveSettings();
+  }
+
   getRecentItems(includeTempNotes = true) {
-    const filesByPath = new Map(this.getAllFiles().map((file) => [file.path, file]));
+    const hidden = new Set(this.settings.hiddenRecent || []);
+    const filesByPath = new Map(this.getAllFiles().filter((file) => !hidden.has(file.path)).map((file) => [file.path, file]));
     const tempFolder = this.settings.tempFolder || TEMPORARY_FOLDER;
 
     const recentFiles = this.settings.recentHistory
@@ -3139,6 +3150,7 @@ module.exports = class LocalStartPagePlugin extends Plugin {
     const fallback = recentFiles.length
       ? recentFiles
       : this.getAllFiles()
+          .filter((file) => !hidden.has(file.path))
           .filter((file) => {
             if (includeTempNotes) return true;
             return !file.path.startsWith(`${tempFolder}/`);
